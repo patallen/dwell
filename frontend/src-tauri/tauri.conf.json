@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicosantangelo/tauri-apps-schema/refs/heads/main/tauri.conf.schema.json",
+  "productName": "adhdeez",
+  "version": "0.1.0",
+  "identifier": "com.adhdeez.app",
+  "build": {
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "adhdeez",
+        "width": 1200,
+        "height": 800
+      }
+    ]
+  }
+}
