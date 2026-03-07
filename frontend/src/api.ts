@@ -201,3 +201,7 @@ export async function updateQuestion(
   });
   return res.json();
 }
+
+export async function deleteQuestion(id: string): Promise<void> {
+  await fetch(`${API}/questions/${id}`, { method: "DELETE" });
+}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Project, Task, Question } from "../api";
-import { fetchProject, updateProject, fetchProjectTasks, fetchQuestions, createTask, updateTask, createQuestion, updateQuestion } from "../api";
+import { fetchProject, updateProject, fetchProjectTasks, fetchQuestions, createTask, updateTask, deleteTask, createQuestion, updateQuestion, deleteQuestion } from "../api";
 import Editor from "./Editor";
 
 interface ProjectViewProps {
@@ -58,6 +58,16 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
     setTasks(await fetchProjectTasks(projectId));
   };
 
+  const handleTaskEdit = async (task: Task, title: string) => {
+    await updateTask(task.id, { title });
+    setTasks(await fetchProjectTasks(projectId));
+  };
+
+  const handleTaskDelete = async (task: Task) => {
+    await deleteTask(task.id);
+    setTasks(await fetchProjectTasks(projectId));
+  };
+
   const handleNewQuestion = async (text: string) => {
     if (!project) return;
     await createQuestion({ question: text, project_id: project.id });
@@ -66,6 +76,16 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
 
   const handleAnswerQuestion = async (q: Question, answer: string) => {
     await updateQuestion(q.id, { answer, status: "answered" });
+    setQuestions(await fetchQuestions({ project_id: projectId }));
+  };
+
+  const handleEditQuestion = async (q: Question, text: string) => {
+    await updateQuestion(q.id, { question: text });
+    setQuestions(await fetchQuestions({ project_id: projectId }));
+  };
+
+  const handleDeleteQuestion = async (q: Question) => {
+    await deleteQuestion(q.id);
     setQuestions(await fetchQuestions({ project_id: projectId }));
   };
 
@@ -120,14 +140,11 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
           <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-4">Questions</h2>
 
           {openQuestions.map(q => (
-            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} />
+            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
           ))}
 
           {answeredQuestions.map(q => (
-            <div key={q.id} className="mb-3 px-3 py-2 rounded-lg bg-surface/50">
-              <p className="text-sm text-text-muted line-through">{q.question}</p>
-              <p className="text-sm text-text-secondary mt-1">{q.answer}</p>
-            </div>
+            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
           ))}
         </div>
       )}
@@ -146,23 +163,13 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
         )}
 
         {openTasks.map(t => (
-          <div key={t.id} className="flex items-center gap-3 py-2 px-1">
-            <button onClick={() => handleTaskDone(t)}
-              className="size-4 rounded border border-border-subtle shrink-0 hover:border-accent transition-colors" />
-            <span className="text-sm text-text">{t.title}</span>
-          </div>
+          <TaskItem key={t.id} task={t} onToggle={handleTaskDone} onEdit={handleTaskEdit} onDelete={handleTaskDelete} />
         ))}
 
         {doneTasks.length > 0 && (
           <div className="mt-4 pt-3 border-t border-border-subtle/50">
             {doneTasks.map(t => (
-              <div key={t.id} className="flex items-center gap-3 py-2 px-1">
-                <button onClick={() => handleTaskDone(t)}
-                  className="size-4 rounded bg-success/20 border border-success/30 shrink-0 flex items-center justify-center">
-                  <span className="text-success text-[10px]">✓</span>
-                </button>
-                <span className="text-sm text-text-muted line-through">{t.title}</span>
-              </div>
+              <TaskItem key={t.id} task={t} onToggle={handleTaskDone} onEdit={handleTaskEdit} onDelete={handleTaskDelete} />
             ))}
           </div>
         )}
@@ -171,29 +178,91 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
   );
 }
 
-function QuestionItem({ question: q, onAnswer }: { question: Question; onAnswer: (q: Question, answer: string) => void }) {
+function TaskItem({ task: t, onToggle, onEdit, onDelete }: {
+  task: Task;
+  onToggle: (t: Task) => void;
+  onEdit: (t: Task, title: string) => void;
+  onDelete: (t: Task) => void;
+}) {
   const [editing, setEditing] = useState(false);
-  const [answer, setAnswer] = useState("");
+  const [title, setTitle] = useState(t.title);
+  const done = t.status === "done";
+
+  const submit = () => {
+    if (title.trim() && title.trim() !== t.title) onEdit(t, title.trim());
+    setEditing(false);
+  };
 
   return (
-    <div className="mb-3 px-3 py-2 rounded-lg border border-warn/20 bg-warn/5">
-      <p className="text-sm text-warn">{q.question}</p>
+    <div className="flex items-center gap-3 py-2 px-1 group">
+      <button onClick={() => onToggle(t)}
+        className={`size-4 rounded shrink-0 transition-colors ${
+          done ? "bg-success/20 border border-success/30 flex items-center justify-center" : "border border-border-subtle hover:border-accent"
+        }`}>
+        {done && <span className="text-success text-[10px]">✓</span>}
+      </button>
       {editing ? (
-        <div className="mt-2 flex gap-2">
-          <input autoFocus value={answer} onChange={e => setAnswer(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter" && answer.trim()) { onAnswer(q, answer.trim()); setEditing(false); } }}
-            className="flex-1 text-sm bg-transparent border border-border rounded px-2 py-1 text-text outline-none"
-            placeholder="Type answer..." />
-          <button onClick={() => { if (answer.trim()) { onAnswer(q, answer.trim()); setEditing(false); } }}
-            className="text-xs text-success hover:text-success/80 px-2">save</button>
-          <button onClick={() => setEditing(false)}
-            className="text-xs text-text-muted hover:text-text-secondary px-2">cancel</button>
-        </div>
+        <input autoFocus value={title} onChange={e => setTitle(e.target.value)}
+          onBlur={submit}
+          onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape") setEditing(false); }}
+          className="flex-1 text-sm bg-transparent border-none outline-none text-text" />
       ) : (
-        <button onClick={() => setEditing(true)}
-          className="text-xs text-text-muted hover:text-text-secondary mt-1">
-          + answer
-        </button>
+        <span className={`text-sm flex-1 ${done ? "text-text-muted line-through" : "text-text"}`}
+          onDoubleClick={() => { setTitle(t.title); setEditing(true); }}>
+          {t.title}
+        </span>
+      )}
+      <button onClick={() => onDelete(t)}
+        className="text-[10px] text-text-muted hover:text-urgent px-1 opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+    </div>
+  );
+}
+
+function QuestionItem({ question: q, onAnswer, onEdit, onDelete }: {
+  question: Question;
+  onAnswer: (q: Question, answer: string) => void;
+  onEdit: (q: Question, text: string) => void;
+  onDelete: (q: Question) => void;
+}) {
+  const [mode, setMode] = useState<null | "answer" | "edit">(null);
+  const [text, setText] = useState("");
+  const answered = q.status === "answered";
+
+  const startEdit = () => { setText(q.question); setMode("edit"); };
+  const startAnswer = () => { setText(q.answer || ""); setMode("answer"); };
+
+  const submit = () => {
+    if (!text.trim()) return;
+    if (mode === "answer") onAnswer(q, text.trim());
+    if (mode === "edit") onEdit(q, text.trim());
+    setMode(null);
+  };
+
+  return (
+    <div className={`mb-3 px-3 py-2 rounded-lg border ${answered ? "border-border-subtle bg-surface/50" : "border-warn/20 bg-warn/5"}`}>
+      <div className="flex items-start gap-2">
+        <p className={`text-sm flex-1 ${answered ? "text-text-muted" : "text-warn"}`}>{q.question}</p>
+        <div className="flex gap-1 shrink-0">
+          <button onClick={startEdit} className="text-[10px] text-text-muted hover:text-text-secondary px-1">edit</button>
+          <button onClick={() => onDelete(q)} className="text-[10px] text-text-muted hover:text-urgent px-1">×</button>
+        </div>
+      </div>
+
+      {answered && !mode && (
+        <p className="text-sm text-text-secondary mt-1 cursor-pointer" onClick={startAnswer}>{q.answer}</p>
+      )}
+
+      {mode ? (
+        <div className="mt-2 flex gap-2">
+          <input autoFocus value={text} onChange={e => setText(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape") setMode(null); }}
+            className="flex-1 text-sm bg-transparent border border-border rounded px-2 py-1 text-text outline-none"
+            placeholder={mode === "answer" ? "Type answer..." : "Edit question..."} />
+          <button onClick={submit} className="text-xs text-success hover:text-success/80 px-2">save</button>
+          <button onClick={() => setMode(null)} className="text-xs text-text-muted hover:text-text-secondary px-2">cancel</button>
+        </div>
+      ) : !answered && (
+        <button onClick={startAnswer} className="text-xs text-text-muted hover:text-text-secondary mt-1">+ answer</button>
       )}
     </div>
   );
