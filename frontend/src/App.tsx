@@ -51,10 +51,8 @@ function App() {
 
   const isProjectView = location.pathname.startsWith("/project/");
 
-  const refresh = useCallback(async () => {
-    const state = await fetchFocus();
+  const applyFocus = useCallback((state: FocusState) => {
     setFocus(state);
-    // If focused on a project and not already viewing it, navigate
     if (state.state === "focused" && state.context?.type === "project" && state.project) {
       if (!location.pathname.startsWith(`/project/${state.project.id}`)) {
         navigate(`/project/${state.project.id}`, { replace: true });
@@ -62,39 +60,45 @@ function App() {
     }
   }, [navigate, location.pathname]);
 
-  useEffect(() => { refresh(); }, []);
+  const refresh = useCallback(async () => {
+    applyFocus(await fetchFocus());
+  }, [applyFocus]);
+
+  useEffect(() => {
+    fetchFocus().then(applyFocus);
+  }, [applyFocus]);
 
   const handlePick = async (task: Task, reason: string) => {
     await pushContext(task.id, "task", reason);
-    refresh();
+    await refresh();
   };
 
-  const handleDone = async () => {
+  const handleDone = useCallback(async () => {
     if (!focus?.task) return;
     await updateTask(focus.task.id, { status: "done" });
     if (focus.state === "focused") await popContext();
-    refresh();
-  };
+    await refresh();
+  }, [focus, refresh]);
 
-  const handlePause = async () => {
+  const handlePause = useCallback(async () => {
     if (focus?.state !== "focused") return;
     await popContext();
-    refresh();
-  };
+    await refresh();
+  }, [focus, refresh]);
 
-  const handleDrop = async () => {
+  const handleDrop = useCallback(async () => {
     if (!focus?.task) return;
     await updateTask(focus.task.id, { status: "dropped" });
     if (focus.state === "focused") await popContext();
-    refresh();
-  };
+    await refresh();
+  }, [focus, refresh]);
 
   const handleCapture = async () => {
     if (!captureText.trim()) return;
     await createTask({ title: captureText.trim() });
     setCaptureText("");
     setOverlay(null);
-    refresh();
+    await refresh();
   };
 
   const handleFind = async (query: string) => {
@@ -120,7 +124,7 @@ function App() {
     } else {
       await pushContext(result.id, "task", "picked from search");
     }
-    refresh();
+    await refresh();
   };
 
   const loadStack = async () => {
@@ -135,7 +139,7 @@ function App() {
     setOverlay(null);
     await pushContext(project.id, "project", "opened");
     navigate(`/project/${project.id}`);
-    refresh();
+    await refresh();
   };
 
   const handleCreateProject = async () => {
@@ -143,7 +147,7 @@ function App() {
     setOverlay(null);
     await pushContext(project.id, "project", "created");
     navigate(`/project/${project.id}`);
-    refresh();
+    await refresh();
   };
 
   useEffect(() => {
@@ -158,20 +162,20 @@ function App() {
 
       if (meta && e.key === "i") { e.preventDefault(); setCaptureText(""); setOverlay("capture"); return; }
       if (meta && e.key === "/") { e.preventDefault(); setFindText(""); setFindResults([]); setOverlay("find"); return; }
-      if (meta && e.key === "j") { e.preventDefault(); loadStack(); setOverlay("stack"); return; }
-      if (meta && e.key === "p") { e.preventDefault(); loadProjects(); setOverlay("projects"); return; }
+      if (meta && e.key === "j") { e.preventDefault(); void loadStack(); setOverlay("stack"); return; }
+      if (meta && e.key === "p") { e.preventDefault(); void loadProjects(); setOverlay("projects"); return; }
       if (meta && e.key === ".") { e.preventDefault(); setOverlay("help"); return; }
       if (meta && e.key === ",") { e.preventDefault(); setOverlay("settings"); return; }
 
       if (!isProjectView && focus?.state === "focused" && focus.task) {
-        if (e.key === "d") { e.preventDefault(); handleDone(); return; }
-        if (e.key === "x") { e.preventDefault(); handleDrop(); return; }
-        if (e.key === "p") { e.preventDefault(); handlePause(); return; }
+        if (e.key === "d") { e.preventDefault(); void handleDone(); return; }
+        if (e.key === "x") { e.preventDefault(); void handleDrop(); return; }
+        if (e.key === "p") { e.preventDefault(); void handlePause(); return; }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [overlay, focus, isProjectView]);
+  }, [overlay, focus, isProjectView, handleDone, handleDrop, handlePause]);
 
   const task = focus?.task;
   const suggestions = focus?.suggestions || [];
@@ -194,18 +198,18 @@ function App() {
               <input className="w-full bg-transparent border-none text-text text-base outline-none pb-3 placeholder:text-text-muted"
                 autoFocus placeholder="what's on your mind?" value={captureText}
                 onChange={e => setCaptureText(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") handleCapture(); }}
+                onKeyDown={e => { if (e.key === "Enter") void handleCapture(); }}
                 ref={captureRef} />
               <span className="text-xs text-text-muted pt-2.5 border-t border-border">enter to save · esc to cancel</span>
             </>}
             {overlay === "find" && <>
               <input className="w-full bg-transparent border-none text-text text-base outline-none pb-3 placeholder:text-text-muted"
                 autoFocus placeholder="search..." value={findText}
-                onChange={e => handleFind(e.target.value)} />
+                onChange={e => void handleFind(e.target.value)} />
               {findResults.length > 0 && (
                 <ul className="flex-1 overflow-y-auto mb-2">
                   {findResults.map(r => (
-                    <li key={`${r.type}-${r.id}`} onClick={() => handleFindSelect(r)}
+                    <li key={`${r.type}-${r.id}`} onClick={() => void handleFindSelect(r)}
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
                       <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.type === "project" ? "bg-accent/15 text-accent-dim" : "bg-background text-text-muted"}`}>{r.type === "project" ? "proj" : "task"}</span>
                       <span>{r.title}</span>
@@ -237,12 +241,12 @@ function App() {
             {overlay === "projects" && <>
               <div className="flex items-center justify-between mb-3.5">
                 <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold">Projects</h3>
-                <button onClick={handleCreateProject} className="text-xs text-accent hover:text-accent/80 transition-colors">+ new</button>
+                <button onClick={() => void handleCreateProject()} className="text-xs text-accent hover:text-accent/80 transition-colors">+ new</button>
               </div>
               {projectList.length > 0 ? (
                 <ul className="flex-1 overflow-y-auto mb-2">
                   {projectList.map(p => (
-                    <li key={p.id} onClick={() => handleOpenProject(p)}
+                    <li key={p.id} onClick={() => void handleOpenProject(p)}
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
                       <span>{p.title}</span>
                       <span className="ml-auto text-xs text-text-muted">{p.status}</span>
@@ -306,7 +310,7 @@ function App() {
                     {suggestions.map(({ task: t, reason }) => (
                       <button
                         key={t.id}
-                        onClick={() => handlePick(t, reason)}
+                        onClick={() => void handlePick(t, reason)}
                         className="w-full text-left rounded-2xl border border-border bg-surface p-5 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
                       >
                         <div className="flex items-center gap-3">
@@ -346,19 +350,19 @@ function App() {
 
                     <div className="flex gap-3 mt-6 pt-5 border-t border-border-subtle">
                       <button
-                        onClick={handleDone}
+                        onClick={() => void handleDone()}
                         className="h-10 px-6 rounded-xl bg-success/15 text-success text-sm font-semibold hover:bg-success/25 active:scale-[0.98] transition-all"
                       >
                         Done
                       </button>
                       <button
-                        onClick={handlePause}
+                        onClick={() => void handlePause()}
                         className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-text-secondary hover:bg-surface-raised transition-colors"
                       >
                         Pause
                       </button>
                       <button
-                        onClick={handleDrop}
+                        onClick={() => void handleDrop()}
                         className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-urgent hover:bg-urgent/10 transition-colors"
                       >
                         Drop

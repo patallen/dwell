@@ -51,7 +51,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
       attributes: {
         class: "tiptap outline-none min-h-[200px]",
       },
-      handleClick: (view, pos, event) => {
+      handleClick: (view, pos) => {
         if (!onQuestionAction) return false;
         const resolved = view.state.doc.resolve(pos);
         const marks = resolved.marks();
@@ -78,7 +78,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     if (editor && content !== editor.getHTML()) {
       editor.commands.setContent(content);
     }
-  }, [content]);
+  }, [content, editor]);
 
   const handleQuestion = useCallback(async () => {
     if (!editor) return;
@@ -93,7 +93,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
       return;
     }
 
-    // Create question entity and link the mark to it
+    // Create a question entity and link the mark to it
     if (onQuestion) {
       const questionId = await onQuestion(selectedText.trim());
       if (questionId) {

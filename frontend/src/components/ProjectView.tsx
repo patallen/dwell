@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Project, Task, Question } from "../api";
 import { fetchProject, updateProject, fetchProjectTasks, fetchQuestions, createTask, updateTask, deleteTask, createQuestion, updateQuestion, deleteQuestion } from "../api";
 import Editor from "./Editor";
@@ -15,26 +15,25 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const load = useCallback(async () => {
-    const [p, t, q] = await Promise.all([
+  useEffect(() => {
+    Promise.all([
       fetchProject(projectId),
       fetchProjectTasks(projectId),
       fetchQuestions({ project_id: projectId }),
-    ]);
-    setProject(p);
-    setTasks(t);
-    setQuestions(q);
+    ]).then(([p, t, q]) => {
+      setProject(p);
+      setTasks(t);
+      setQuestions(q);
+    });
   }, [projectId]);
-
-  useEffect(() => { load(); }, [load]);
 
   const handleBodyUpdate = (html: string) => {
     if (!project) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      updateProject(project.id, { body: html });
+      void updateProject(project.id, { body: html });
     }, 800);
   };
 
@@ -134,8 +133,8 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
       {editingTitle ? (
         <input ref={titleRef} defaultValue={project.title} autoFocus
           className="w-full text-3xl font-bold bg-transparent border-none outline-none text-text tracking-tight mb-2"
-          onBlur={handleTitleSubmit}
-          onKeyDown={e => { if (e.key === "Enter") handleTitleSubmit(); }} />
+          onBlur={() => void handleTitleSubmit()}
+          onKeyDown={e => { if (e.key === "Enter") void handleTitleSubmit(); }} />
       ) : (
         <h1 onClick={() => setEditingTitle(true)}
           className="text-3xl font-bold text-text tracking-tight mb-2 cursor-text">
@@ -180,15 +179,15 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
                   value={inlineAnswer}
                   onChange={e => setInlineAnswer(e.target.value)}
                   onKeyDown={e => {
-                    if (e.key === "Enter") handleInlineAnswer();
+                    if (e.key === "Enter") void handleInlineAnswer();
                     if (e.key === "Escape") closeMenu();
                   }}
                   className="w-full text-sm bg-transparent border border-border rounded px-2 py-1 text-text outline-none mb-2"
                   placeholder={questionMenu.question.status === "answered" ? "Edit answer..." : "Answer..."}
                 />
                 <div className="flex gap-2 text-[11px]">
-                  <button onClick={handleInlineAnswer} className="text-success hover:text-success/80">save</button>
-                  <button onClick={handleInlineDelete} className="text-urgent hover:text-urgent/80">remove</button>
+                  <button onClick={() => void handleInlineAnswer()} className="text-success hover:text-success/80">save</button>
+                  <button onClick={() => void handleInlineDelete()} className="text-urgent hover:text-urgent/80">remove</button>
                   <button onClick={closeMenu} className="text-text-muted hover:text-text-secondary ml-auto">cancel</button>
                 </div>
               </div>
@@ -216,7 +215,7 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
       <div className="border-t border-border-subtle pt-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold">Tasks</h2>
-          <button onClick={handleAddTask} className="text-xs text-accent hover:text-accent/80 transition-colors">
+          <button onClick={() => void handleAddTask()} className="text-xs text-accent hover:text-accent/80 transition-colors">
             + add task
           </button>
         </div>
