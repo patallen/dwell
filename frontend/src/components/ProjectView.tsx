@@ -68,10 +68,20 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
     setTasks(await fetchProjectTasks(projectId));
   };
 
-  const handleNewQuestion = async (text: string) => {
-    if (!project) return;
-    await createQuestion({ question: text, project_id: project.id });
+  const [highlightedQuestionId, setHighlightedQuestionId] = useState<string | null>(null);
+
+  const handleNewQuestion = async (text: string): Promise<string> => {
+    if (!project) return "";
+    const q = await createQuestion({ question: text, project_id: project.id });
     setQuestions(await fetchQuestions({ project_id: project.id }));
+    return q.id;
+  };
+
+  const handleQuestionClick = (questionId: string) => {
+    setHighlightedQuestionId(questionId);
+    const el = document.getElementById(`question-${questionId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => setHighlightedQuestionId(null), 2000);
   };
 
   const handleAnswerQuestion = async (q: Question, answer: string) => {
@@ -130,6 +140,7 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
           content={project.body}
           onUpdate={handleBodyUpdate}
           onQuestion={handleNewQuestion}
+          onQuestionClick={handleQuestionClick}
           placeholder="Describe the goal, add notes, highlight open questions..."
         />
       </div>
@@ -140,11 +151,11 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
           <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-4">Questions</h2>
 
           {openQuestions.map(q => (
-            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
+            <QuestionItem key={q.id} question={q} highlighted={highlightedQuestionId === q.id} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
           ))}
 
           {answeredQuestions.map(q => (
-            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
+            <QuestionItem key={q.id} question={q} highlighted={highlightedQuestionId === q.id} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
           ))}
         </div>
       )}
@@ -218,8 +229,9 @@ function TaskItem({ task: t, onToggle, onEdit, onDelete }: {
   );
 }
 
-function QuestionItem({ question: q, onAnswer, onEdit, onDelete }: {
+function QuestionItem({ question: q, highlighted, onAnswer, onEdit, onDelete }: {
   question: Question;
+  highlighted?: boolean;
   onAnswer: (q: Question, answer: string) => void;
   onEdit: (q: Question, text: string) => void;
   onDelete: (q: Question) => void;
@@ -239,7 +251,10 @@ function QuestionItem({ question: q, onAnswer, onEdit, onDelete }: {
   };
 
   return (
-    <div className={`mb-3 px-3 py-2 rounded-lg border ${answered ? "border-border-subtle bg-surface/50" : "border-warn/20 bg-warn/5"}`}>
+    <div id={`question-${q.id}`}
+      className={`mb-3 px-3 py-2 rounded-lg border transition-all ${
+        highlighted ? "ring-2 ring-warn/50" : ""
+      } ${answered ? "border-border-subtle bg-surface/50" : "border-warn/20 bg-warn/5"}`}>
       <div className="flex items-start gap-2">
         <p className={`text-sm flex-1 ${answered ? "text-text-muted" : "text-warn"}`}>{q.question}</p>
         <div className="flex gap-1 shrink-0">

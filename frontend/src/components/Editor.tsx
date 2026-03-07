@@ -7,11 +7,12 @@ import { useCallback, useEffect, useState, useRef } from "react";
 interface EditorProps {
   content: string;
   onUpdate: (content: string) => void;
-  onQuestion?: (text: string) => void;
+  onQuestion?: (text: string) => Promise<string | void>;
+  onQuestionClick?: (questionId: string) => void;
   placeholder?: string;
 }
 
-export default function Editor({ content, onUpdate, onQuestion, placeholder }: EditorProps) {
+export default function Editor({ content, onUpdate, onQuestion, onQuestionClick, placeholder }: EditorProps) {
   const [toolbarPos, setToolbarPos] = useState<{ top: number; left: number } | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
 
@@ -44,6 +45,17 @@ export default function Editor({ content, onUpdate, onQuestion, placeholder }: E
       attributes: {
         class: "tiptap outline-none min-h-[200px]",
       },
+      handleClick: (view, pos) => {
+        if (!onQuestionClick) return false;
+        const resolved = view.state.doc.resolve(pos);
+        const marks = resolved.marks();
+        const questionMark = marks.find(m => m.type.name === "openQuestion");
+        if (questionMark?.attrs.questionId) {
+          onQuestionClick(questionMark.attrs.questionId);
+          return true;
+        }
+        return false;
+      },
     },
   });
 
@@ -53,15 +65,28 @@ export default function Editor({ content, onUpdate, onQuestion, placeholder }: E
     }
   }, [content]);
 
-  const handleQuestion = useCallback(() => {
+  const handleQuestion = useCallback(async () => {
     if (!editor) return;
     const { from, to } = editor.state.selection;
     if (from === to) return;
     const selectedText = editor.state.doc.textBetween(from, to);
-    editor.chain().focus().toggleOpenQuestion().run();
-    if (onQuestion && selectedText.trim()) {
-      onQuestion(selectedText.trim());
+    if (!selectedText.trim()) return;
+
+    // Check if already marked — if so, just toggle off
+    if (editor.isActive("openQuestion")) {
+      editor.chain().focus().toggleOpenQuestion().run();
+      return;
     }
+
+    // Create question entity and link the mark to it
+    if (onQuestion) {
+      const questionId = await onQuestion(selectedText.trim());
+      if (questionId) {
+        editor.chain().focus().setOpenQuestion({ questionId }).run();
+        return;
+      }
+    }
+    editor.chain().focus().toggleOpenQuestion().run();
   }, [editor, onQuestion]);
 
   if (!editor) return null;

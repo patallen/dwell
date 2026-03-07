@@ -3,7 +3,8 @@ import { Mark, mergeAttributes } from "@tiptap/core";
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
     openQuestion: {
-      toggleOpenQuestion: () => ReturnType;
+      toggleOpenQuestion: (attrs?: { questionId?: string }) => ReturnType;
+      setOpenQuestion: (attrs: { questionId: string }) => ReturnType;
     };
   }
 }
@@ -13,10 +14,13 @@ export const OpenQuestion = Mark.create({
 
   addAttributes() {
     return {
-      status: {
-        default: "open",
-        parseHTML: (element) => element.getAttribute("data-status") || "open",
-        renderHTML: (attributes) => ({ "data-status": attributes.status }),
+      questionId: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("data-question-id"),
+        renderHTML: (attributes) => {
+          if (!attributes.questionId) return {};
+          return { "data-question-id": attributes.questionId };
+        },
       },
     };
   },
@@ -36,9 +40,14 @@ export const OpenQuestion = Mark.create({
   addCommands() {
     return {
       toggleOpenQuestion:
-        () =>
+        (attrs) =>
         ({ commands }) => {
-          return commands.toggleMark(this.name);
+          return commands.toggleMark(this.name, attrs);
+        },
+      setOpenQuestion:
+        (attrs) =>
+        ({ commands }) => {
+          return commands.setMark(this.name, attrs);
         },
     };
   },
