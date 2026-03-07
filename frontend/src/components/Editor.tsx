@@ -4,15 +4,21 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { OpenQuestion } from "../extensions/openQuestion";
 import { useCallback, useEffect, useState, useRef } from "react";
 
+export interface QuestionMenuAction {
+  questionId: string;
+  questionText: string;
+  position: { top: number; left: number };
+}
+
 interface EditorProps {
   content: string;
   onUpdate: (content: string) => void;
   onQuestion?: (text: string) => Promise<string | void>;
-  onQuestionClick?: (questionId: string) => void;
+  onQuestionAction?: (action: QuestionMenuAction) => void;
   placeholder?: string;
 }
 
-export default function Editor({ content, onUpdate, onQuestion, onQuestionClick, placeholder }: EditorProps) {
+export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, placeholder }: EditorProps) {
   const [toolbarPos, setToolbarPos] = useState<{ top: number; left: number } | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
 
@@ -45,13 +51,22 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionClick,
       attributes: {
         class: "tiptap outline-none min-h-[200px]",
       },
-      handleClick: (view, pos) => {
-        if (!onQuestionClick) return false;
+      handleClick: (view, pos, event) => {
+        if (!onQuestionAction) return false;
         const resolved = view.state.doc.resolve(pos);
         const marks = resolved.marks();
         const questionMark = marks.find(m => m.type.name === "openQuestion");
         if (questionMark?.attrs.questionId) {
-          onQuestionClick(questionMark.attrs.questionId);
+          const coords = view.coordsAtPos(pos);
+          const editorRect = view.dom.getBoundingClientRect();
+          onQuestionAction({
+            questionId: questionMark.attrs.questionId,
+            questionText: "", // filled by parent from question entity
+            position: {
+              top: coords.bottom - editorRect.top + 4,
+              left: coords.left - editorRect.left,
+            },
+          });
           return true;
         }
         return false;

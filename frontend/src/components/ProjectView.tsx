@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { Project, Task, Question } from "../api";
 import { fetchProject, updateProject, fetchProjectTasks, fetchQuestions, createTask, updateTask, deleteTask, createQuestion, updateQuestion, deleteQuestion } from "../api";
 import Editor from "./Editor";
+import type { QuestionMenuAction } from "./Editor";
 
 interface ProjectViewProps {
   projectId: string;
@@ -68,7 +69,8 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
     setTasks(await fetchProjectTasks(projectId));
   };
 
-  const [highlightedQuestionId, setHighlightedQuestionId] = useState<string | null>(null);
+  const [questionMenu, setQuestionMenu] = useState<{ question: Question; position: { top: number; left: number } } | null>(null);
+  const [inlineAnswer, setInlineAnswer] = useState<string>("");
 
   const handleNewQuestion = async (text: string): Promise<string> => {
     if (!project) return "";
@@ -77,11 +79,27 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
     return q.id;
   };
 
-  const handleQuestionClick = (questionId: string) => {
-    setHighlightedQuestionId(questionId);
-    const el = document.getElementById(`question-${questionId}`);
-    el?.scrollIntoView({ behavior: "smooth", block: "center" });
-    setTimeout(() => setHighlightedQuestionId(null), 2000);
+  const handleQuestionAction = (action: QuestionMenuAction) => {
+    const q = questions.find(q => q.id === action.questionId);
+    if (!q) return;
+    setQuestionMenu({ question: q, position: action.position });
+    setInlineAnswer(q.answer || "");
+  };
+
+  const closeMenu = () => { setQuestionMenu(null); setInlineAnswer(""); };
+
+  const handleInlineAnswer = async () => {
+    if (!questionMenu || !inlineAnswer.trim()) return;
+    await updateQuestion(questionMenu.question.id, { answer: inlineAnswer.trim(), status: "answered" });
+    setQuestions(await fetchQuestions({ project_id: projectId }));
+    closeMenu();
+  };
+
+  const handleInlineDelete = async () => {
+    if (!questionMenu) return;
+    await deleteQuestion(questionMenu.question.id);
+    setQuestions(await fetchQuestions({ project_id: projectId }));
+    closeMenu();
   };
 
   const handleAnswerQuestion = async (q: Question, answer: string) => {
@@ -136,13 +154,47 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
 
       {/* Editor */}
       <div className="mb-10">
-        <Editor
-          content={project.body}
-          onUpdate={handleBodyUpdate}
-          onQuestion={handleNewQuestion}
-          onQuestionClick={handleQuestionClick}
-          placeholder="Describe the goal, add notes, highlight open questions..."
-        />
+        <div className="relative">
+          <Editor
+            content={project.body}
+            onUpdate={handleBodyUpdate}
+            onQuestion={handleNewQuestion}
+            onQuestionAction={handleQuestionAction}
+            placeholder="Describe the goal, add notes, highlight open questions..."
+          />
+
+          {/* Inline question context menu */}
+          {questionMenu && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={closeMenu} />
+              <div
+                className="absolute z-20 bg-surface-raised border border-border rounded-xl shadow-xl p-3 w-64"
+                style={{ top: questionMenu.position.top, left: questionMenu.position.left }}
+              >
+                <p className="text-xs text-warn mb-2">{questionMenu.question.question}</p>
+                {questionMenu.question.status === "answered" && (
+                  <p className="text-xs text-text-secondary mb-2">{questionMenu.question.answer}</p>
+                )}
+                <input
+                  autoFocus
+                  value={inlineAnswer}
+                  onChange={e => setInlineAnswer(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") handleInlineAnswer();
+                    if (e.key === "Escape") closeMenu();
+                  }}
+                  className="w-full text-sm bg-transparent border border-border rounded px-2 py-1 text-text outline-none mb-2"
+                  placeholder={questionMenu.question.status === "answered" ? "Edit answer..." : "Answer..."}
+                />
+                <div className="flex gap-2 text-[11px]">
+                  <button onClick={handleInlineAnswer} className="text-success hover:text-success/80">save</button>
+                  <button onClick={handleInlineDelete} className="text-urgent hover:text-urgent/80">remove</button>
+                  <button onClick={closeMenu} className="text-text-muted hover:text-text-secondary ml-auto">cancel</button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Open Questions */}
@@ -151,11 +203,11 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
           <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-4">Questions</h2>
 
           {openQuestions.map(q => (
-            <QuestionItem key={q.id} question={q} highlighted={highlightedQuestionId === q.id} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
+            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
           ))}
 
           {answeredQuestions.map(q => (
-            <QuestionItem key={q.id} question={q} highlighted={highlightedQuestionId === q.id} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
+            <QuestionItem key={q.id} question={q} onAnswer={handleAnswerQuestion} onEdit={handleEditQuestion} onDelete={handleDeleteQuestion} />
           ))}
         </div>
       )}
@@ -229,9 +281,8 @@ function TaskItem({ task: t, onToggle, onEdit, onDelete }: {
   );
 }
 
-function QuestionItem({ question: q, highlighted, onAnswer, onEdit, onDelete }: {
+function QuestionItem({ question: q, onAnswer, onEdit, onDelete }: {
   question: Question;
-  highlighted?: boolean;
   onAnswer: (q: Question, answer: string) => void;
   onEdit: (q: Question, text: string) => void;
   onDelete: (q: Question) => void;
@@ -251,10 +302,7 @@ function QuestionItem({ question: q, highlighted, onAnswer, onEdit, onDelete }: 
   };
 
   return (
-    <div id={`question-${q.id}`}
-      className={`mb-3 px-3 py-2 rounded-lg border transition-all ${
-        highlighted ? "ring-2 ring-warn/50" : ""
-      } ${answered ? "border-border-subtle bg-surface/50" : "border-warn/20 bg-warn/5"}`}>
+    <div className={`mb-3 px-3 py-2 rounded-lg border ${answered ? "border-border-subtle bg-surface/50" : "border-warn/20 bg-warn/5"}`}>
       <div className="flex items-start gap-2">
         <p className={`text-sm flex-1 ${answered ? "text-text-muted" : "text-warn"}`}>{q.question}</p>
         <div className="flex gap-1 shrink-0">
