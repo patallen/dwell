@@ -128,8 +128,10 @@ function App() {
     refresh();
   };
 
-  const handleBackFromProject = () => {
+  const handleBackFromProject = async () => {
     setActiveProjectId(null);
+    await popContext();
+    refresh();
   };
 
   useEffect(() => {
