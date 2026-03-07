@@ -1,17 +1,21 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import type { Task, FocusState } from "./api";
+import type { Task, Project, FocusState } from "./api";
 import {
   fetchFocus,
   fetchContext,
   fetchTasks,
+  fetchProjects,
+  fetchProject,
   createTask,
+  createProject,
   updateTask,
   pushContext,
   popContext,
 } from "./api";
 import type { ContextEntry } from "./api";
+import ProjectView from "./components/ProjectView";
 
-type Overlay = null | "capture" | "find" | "stack" | "help" | "settings";
+type Overlay = null | "capture" | "find" | "stack" | "projects" | "help" | "settings";
 
 function loeDot(loe: string | null) {
   if (loe === "hot") return "bg-urgent shadow-[0_0_6px_rgba(248,113,113,0.5)]";
@@ -25,13 +29,19 @@ function App() {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [captureText, setCaptureText] = useState("");
   const [findText, setFindText] = useState("");
-  const [findResults, setFindResults] = useState<Task[]>([]);
+  const [findResults, setFindResults] = useState<{ type: "task" | "project"; id: string; title: string; status: string }[]>([]);
   const [stackItems, setStackItems] = useState<ContextEntry[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [projectList, setProjectList] = useState<Project[]>([]);
   const captureRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     const state = await fetchFocus();
     setFocus(state);
+    // If focused on a project, show project view
+    if (state.state === "focused" && state.context?.type === "project" && state.project) {
+      setActiveProjectId(state.project.id);
+    }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
@@ -72,19 +82,54 @@ function App() {
   const handleFind = async (query: string) => {
     setFindText(query);
     if (!query.trim()) { setFindResults([]); return; }
-    setFindResults(await fetchTasks({ search: query.trim() }));
+    const [tasks, projects] = await Promise.all([
+      fetchTasks({ search: query.trim() }),
+      fetchProjects({ search: query.trim() }),
+    ]);
+    setFindResults([
+      ...projects.map(p => ({ type: "project" as const, id: p.id, title: p.title, status: p.status })),
+      ...tasks.map(t => ({ type: "task" as const, id: t.id, title: t.title, status: t.status })),
+    ]);
   };
 
-  const handleFindSelect = async (task: Task) => {
+  const handleFindSelect = async (result: { type: "task" | "project"; id: string }) => {
     setOverlay(null);
     setFindText("");
     setFindResults([]);
-    await pushContext(task.id, "task", "picked from search");
+    if (result.type === "project") {
+      setActiveProjectId(result.id);
+      await pushContext(result.id, "project", "picked from search");
+    } else {
+      await pushContext(result.id, "task", "picked from search");
+    }
     refresh();
   };
 
   const loadStack = async () => {
     setStackItems(await fetchContext());
+  };
+
+  const loadProjects = async () => {
+    setProjectList(await fetchProjects({ status: "active" }));
+  };
+
+  const handleOpenProject = async (project: Project) => {
+    setOverlay(null);
+    setActiveProjectId(project.id);
+    await pushContext(project.id, "project", "opened");
+    refresh();
+  };
+
+  const handleCreateProject = async () => {
+    const project = await createProject({ title: "New project" });
+    setOverlay(null);
+    setActiveProjectId(project.id);
+    await pushContext(project.id, "project", "created");
+    refresh();
+  };
+
+  const handleBackFromProject = () => {
+    setActiveProjectId(null);
   };
 
   useEffect(() => {
@@ -93,6 +138,7 @@ function App() {
 
       if (e.key === "Escape") {
         if (overlay) { setOverlay(null); setCaptureText(""); setFindText(""); setFindResults([]); return; }
+        if (activeProjectId) { handleBackFromProject(); return; }
         return;
       }
       if (overlay) return;
@@ -100,6 +146,7 @@ function App() {
       if (meta && e.key === "i") { e.preventDefault(); setCaptureText(""); setOverlay("capture"); return; }
       if (meta && e.key === "/") { e.preventDefault(); setFindText(""); setFindResults([]); setOverlay("find"); return; }
       if (meta && e.key === "j") { e.preventDefault(); loadStack(); setOverlay("stack"); return; }
+      if (meta && e.key === "p") { e.preventDefault(); loadProjects(); setOverlay("projects"); return; }
       if (meta && e.key === ".") { e.preventDefault(); setOverlay("help"); return; }
       if (meta && e.key === ",") { e.preventDefault(); setOverlay("settings"); return; }
 
@@ -145,10 +192,11 @@ function App() {
               {findResults.length > 0 && (
                 <ul className="flex-1 overflow-y-auto mb-2">
                   {findResults.map(r => (
-                    <li key={r.id} onClick={() => handleFindSelect(r)}
+                    <li key={`${r.type}-${r.id}`} onClick={() => handleFindSelect(r)}
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
+                      <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.type === "project" ? "bg-accent/15 text-accent-dim" : "bg-background text-text-muted"}`}>{r.type === "project" ? "proj" : "task"}</span>
                       <span>{r.title}</span>
-                      <span className="ml-auto text-xs uppercase tracking-wider text-text-muted bg-background px-2 py-0.5 rounded">{r.status}</span>
+                      <span className="ml-auto text-xs uppercase tracking-wider text-text-muted">{r.status}</span>
                     </li>
                   ))}
                 </ul>
@@ -173,11 +221,29 @@ function App() {
               ) : <p className="text-sm text-text-muted mb-2">stack is empty</p>}
               <span className="text-xs text-text-muted pt-2.5 border-t border-border">top = current focus · esc to close</span>
             </>}
+            {overlay === "projects" && <>
+              <div className="flex items-center justify-between mb-3.5">
+                <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold">Projects</h3>
+                <button onClick={handleCreateProject} className="text-xs text-accent hover:text-accent/80 transition-colors">+ new</button>
+              </div>
+              {projectList.length > 0 ? (
+                <ul className="flex-1 overflow-y-auto mb-2">
+                  {projectList.map(p => (
+                    <li key={p.id} onClick={() => handleOpenProject(p)}
+                      className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
+                      <span>{p.title}</span>
+                      <span className="ml-auto text-xs text-text-muted">{p.status}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="text-sm text-text-muted mb-2">no projects yet</p>}
+              <span className="text-xs text-text-muted pt-2.5 border-t border-border">click to open · esc to close</span>
+            </>}
             {overlay === "help" && <>
               <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3.5">Keyboard Shortcuts</h3>
               <ul className="mb-2">
                 {[
-                  ["Quick capture", "⌘I"], ["Find", "⌘/"], ["Stack", "⌘J"],
+                  ["Quick capture", "⌘I"], ["Find", "⌘/"], ["Stack", "⌘J"], ["Projects", "⌘P"],
                   ["Accept suggestion", "Enter / Y"], ["Skip suggestion", "N / Tab"],
                   ["Done", "D"], ["Drop", "X"], ["Pause (put back)", "P"],
                   ["Help", "⌘."], ["Settings", "⌘,"], ["Close / back", "Esc"],
@@ -200,10 +266,15 @@ function App() {
       )}
 
       {/* Main */}
-      <main className="flex-1 flex items-center justify-center p-6 sm:p-10 overflow-y-auto">
+      <main className={`flex-1 flex ${activeProjectId ? "items-start" : "items-center"} justify-center p-6 sm:p-10 overflow-y-auto`}>
+
+        {/* Project View */}
+        {activeProjectId && (
+          <ProjectView projectId={activeProjectId} onBack={handleBackFromProject} />
+        )}
 
         {/* Empty */}
-        {focus?.state === "empty" && (
+        {!activeProjectId && focus?.state === "empty" && (
           <div className="text-center">
             <p className="text-text-secondary text-xl">All clear.</p>
             <p className="text-text-muted text-sm mt-4">
@@ -214,7 +285,7 @@ function App() {
         )}
 
         {/* Suggesting */}
-        {focus?.state === "suggesting" && suggestions.length > 0 && (
+        {!activeProjectId && focus?.state === "suggesting" && suggestions.length > 0 && (
           <div className="w-full h-full flex flex-col items-center justify-center gap-12">
             <h1 className="text-5xl sm:text-6xl font-semibold text-text-secondary text-center tracking-tight leading-none px-6">
               What should we work on?
@@ -243,7 +314,7 @@ function App() {
         )}
 
         {/* Focused */}
-        {focus?.state === "focused" && task && (
+        {!activeProjectId && focus?.state === "focused" && task && (
           <div className="w-full max-w-xl">
             <p className="text-text-muted text-sm mb-6 text-center">Working on</p>
 
@@ -292,6 +363,7 @@ function App() {
         <span>⌘I capture</span>
         <span>⌘/ find</span>
         <span>⌘J stack</span>
+        <span>⌘P projects</span>
         <span>⌘. help</span>
       </footer>
     </div>

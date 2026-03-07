@@ -27,3 +27,76 @@ html, body, #root {
   --color-info: #60a5fa;
   --color-success: #34d399;
 }
+
+/* TipTap editor */
+.tiptap {
+  color: var(--color-text);
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+.tiptap p {
+  margin-bottom: 0.75em;
+}
+
+.tiptap h1, .tiptap h2, .tiptap h3 {
+  font-weight: 600;
+  color: var(--color-text);
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.tiptap h1 { font-size: 1.5rem; }
+.tiptap h2 { font-size: 1.25rem; }
+.tiptap h3 { font-size: 1.1rem; }
+
+.tiptap ul, .tiptap ol {
+  padding-left: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.tiptap li { margin-bottom: 0.25em; }
+
+.tiptap code {
+  background: var(--color-surface-raised);
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.tiptap pre {
+  background: var(--color-surface-raised);
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  margin-bottom: 0.75em;
+  overflow-x: auto;
+}
+
+.tiptap blockquote {
+  border-left: 3px solid var(--color-accent-dim);
+  padding-left: 1em;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.75em;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--color-text-muted);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+
+/* Open question mark */
+mark[data-type="open-question"] {
+  background: rgba(251, 191, 36, 0.15);
+  border-bottom: 2px solid rgba(251, 191, 36, 0.5);
+  color: var(--color-warn);
+  padding: 0 2px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+mark[data-type="open-question"]:hover {
+  background: rgba(251, 191, 36, 0.25);
+}

@@ -26,9 +26,30 @@ export interface Suggestion {
   reason: string;
 }
 
+export interface Question {
+  id: string;
+  question: string;
+  answer: string;
+  status: "open" | "answered";
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Project {
+  id: string;
+  title: string;
+  body: string;
+  status: "active" | "paused" | "done" | "dropped";
+  deadline: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface FocusState {
   state: "focused" | "suggesting" | "empty";
   task?: Task | null;
+  project?: Project | null;
   suggestions?: Suggestion[];
   context?: ContextEntry;
   stack_depth?: number;
@@ -97,4 +118,86 @@ export async function updateTask(
 
 export async function deleteTask(id: string): Promise<void> {
   await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
+}
+
+// --- Projects ---
+
+export async function fetchProjects(params?: Record<string, string>): Promise<Project[]> {
+  const url = new URL(`${API}/projects`);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  }
+  const res = await fetch(url.toString());
+  return res.json();
+}
+
+export async function fetchProject(id: string): Promise<Project> {
+  const res = await fetch(`${API}/projects/${id}`);
+  return res.json();
+}
+
+export async function createProject(data: {
+  title: string;
+  body?: string;
+  status?: string;
+  deadline?: string;
+}): Promise<Project> {
+  const res = await fetch(`${API}/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function updateProject(
+  id: string,
+  data: Partial<Pick<Project, "title" | "body" | "status" | "deadline">>
+): Promise<Project> {
+  const res = await fetch(`${API}/projects/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function fetchProjectTasks(projectId: string): Promise<Task[]> {
+  const res = await fetch(`${API}/projects/${projectId}/tasks`);
+  return res.json();
+}
+
+// --- Questions ---
+
+export async function fetchQuestions(params?: Record<string, string>): Promise<Question[]> {
+  const url = new URL(`${API}/questions`);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  }
+  const res = await fetch(url.toString());
+  return res.json();
+}
+
+export async function createQuestion(data: {
+  question: string;
+  project_id?: string;
+}): Promise<Question> {
+  const res = await fetch(`${API}/questions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function updateQuestion(
+  id: string,
+  data: Partial<Pick<Question, "question" | "answer" | "status">>
+): Promise<Question> {
+  const res = await fetch(`${API}/questions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
 }

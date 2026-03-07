@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from models import ContextEntry, Task
+from models import ContextEntry, Project, Question, Task
 
 
 class FileStore:
@@ -14,17 +14,29 @@ class FileStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.tasks: dict[str, Task] = {}
+        self.projects: dict[str, Project] = {}
+        self.questions: dict[str, Question] = {}
         self.context_stack: list[ContextEntry] = []
         self._index()
         self._load_context()
+        self._load_questions()
 
     def _index(self):
         """Walk the vault and parse all files into memory."""
         self.tasks.clear()
+        self.projects.clear()
         for path in self.root.rglob("*.md"):
-            task = self._parse_file(path)
-            if task:
-                self.tasks[task.id] = task
+            meta, body = self._parse_frontmatter(path)
+            if meta is None:
+                continue
+            if meta.get("type") == "project":
+                project = self._meta_to_project(meta, body, path)
+                if project:
+                    self.projects[project.id] = project
+            else:
+                task = self._meta_to_task(meta, body, path)
+                if task:
+                    self.tasks[task.id] = task
 
     def _parse_datetime(self, meta: dict, key: str) -> datetime | None:
         val = meta.get(key)
@@ -35,33 +47,30 @@ class FileStore:
         except (ValueError, TypeError):
             return None
 
-    def _parse_file(self, path: Path) -> Task | None:
+    def _parse_frontmatter(self, path: Path) -> tuple[dict | None, str]:
         try:
             content = path.read_text()
         except Exception:
-            return None
-
+            return None, ""
         if not content.startswith("---\n"):
-            return None
-
+            return None, ""
         parts = content[4:].split("\n---\n", 1)
         if len(parts) != 2:
-            return None
-
+            return None, ""
         try:
             meta = yaml.safe_load(parts[0])
         except yaml.YAMLError:
-            return None
-
+            return None, ""
         if not isinstance(meta, dict):
-            return None
+            return None, ""
+        return meta, parts[1].strip()
 
+    def _meta_to_task(self, meta: dict, body: str, path: Path) -> Task | None:
         task_id = meta.get("id", str(path.relative_to(self.root)).removesuffix(".md"))
-
         return Task(
             id=task_id,
             title=meta.get("title", ""),
-            body=parts[1].strip(),
+            body=body,
             status=meta.get("status", "open"),
             loe=meta.get("loe"),
             deadline=self._parse_datetime(meta, "deadline"),
@@ -69,6 +78,19 @@ class FileStore:
             created_at=self._parse_datetime(meta, "created") or datetime.now(),
             updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
             last_viewed=self._parse_datetime(meta, "last_viewed"),
+            file_path=str(path),
+        )
+
+    def _meta_to_project(self, meta: dict, body: str, path: Path) -> Project | None:
+        proj_id = meta.get("id", str(path.relative_to(self.root)).removesuffix(".md"))
+        return Project(
+            id=proj_id,
+            title=meta.get("title", ""),
+            body=body,
+            status=meta.get("status", "active"),
+            deadline=self._parse_datetime(meta, "deadline"),
+            created_at=self._parse_datetime(meta, "created") or datetime.now(),
+            updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
             file_path=str(path),
         )
 
@@ -185,6 +207,132 @@ class FileStore:
             {"task": t, "reason": self._score_reason(t)}
             for t in open_tasks[:limit]
         ]
+
+    # --- Projects ---
+
+    def create_project(self, project: Project) -> Project:
+        if not project.id:
+            project.id = uuid.uuid4().hex[:8]
+        project.created_at = datetime.now()
+        project.updated_at = datetime.now()
+        if not project.file_path:
+            projects_dir = self.root / "projects"
+            projects_dir.mkdir(exist_ok=True)
+            project.file_path = str(projects_dir / f"{project.id}.md")
+        self._write_project_file(project)
+        self.projects[project.id] = project
+        return project
+
+    def get_project(self, project_id: str) -> Project | None:
+        return self.projects.get(project_id)
+
+    def update_project(self, project: Project) -> Project:
+        project.updated_at = datetime.now()
+        self._write_project_file(project)
+        self.projects[project.id] = project
+        return project
+
+    def delete_project(self, project_id: str) -> bool:
+        project = self.projects.get(project_id)
+        if not project:
+            return False
+        try:
+            os.remove(project.file_path)
+        except FileNotFoundError:
+            pass
+        del self.projects[project_id]
+        return True
+
+    def query_projects(self, status: str | None = None, search: str | None = None) -> list[Project]:
+        results = []
+        for p in self.projects.values():
+            if status and p.status != status:
+                continue
+            if search:
+                q = search.lower()
+                if q not in p.title.lower() and q not in p.body.lower():
+                    continue
+            results.append(p)
+        return results
+
+    def project_tasks(self, project_id: str) -> list[Task]:
+        return [t for t in self.tasks.values() if t.parent == project_id]
+
+    def _write_project_file(self, project: Project):
+        path = Path(project.file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        meta: dict = {
+            "type": "project",
+            "id": project.id,
+            "title": project.title,
+            "status": project.status,
+            "created": project.created_at.isoformat(),
+            "updated": project.updated_at.isoformat(),
+        }
+        if project.deadline:
+            meta["deadline"] = project.deadline.isoformat()
+        frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
+        content = f"---\n{frontmatter}---\n\n{project.body}\n"
+        path.write_text(content)
+
+    # --- Questions ---
+
+    def _questions_path(self) -> Path:
+        return self.root / ".questions.json"
+
+    def _load_questions(self):
+        path = self._questions_path()
+        if not path.exists():
+            self.questions = {}
+            return
+        try:
+            data = json.loads(path.read_text())
+            self.questions = {
+                q["id"]: Question(
+                    id=q["id"], question=q["question"], answer=q.get("answer", ""),
+                    status=q.get("status", "open"), project_id=q.get("project_id"),
+                    created_at=datetime.fromisoformat(q["created_at"]),
+                    updated_at=datetime.fromisoformat(q["updated_at"]),
+                ) for q in data
+            }
+        except (json.JSONDecodeError, KeyError):
+            self.questions = {}
+
+    def _save_questions(self):
+        data = [{
+            "id": q.id, "question": q.question, "answer": q.answer,
+            "status": q.status, "project_id": q.project_id,
+            "created_at": q.created_at.isoformat(), "updated_at": q.updated_at.isoformat(),
+        } for q in self.questions.values()]
+        self._questions_path().write_text(json.dumps(data, indent=2))
+
+    def create_question(self, q: Question) -> Question:
+        if not q.id:
+            q.id = uuid.uuid4().hex[:8]
+        q.created_at = datetime.now()
+        q.updated_at = datetime.now()
+        self.questions[q.id] = q
+        self._save_questions()
+        return q
+
+    def get_question(self, qid: str) -> Question | None:
+        return self.questions.get(qid)
+
+    def update_question(self, q: Question) -> Question:
+        q.updated_at = datetime.now()
+        self.questions[q.id] = q
+        self._save_questions()
+        return q
+
+    def delete_question(self, qid: str) -> bool:
+        if qid not in self.questions:
+            return False
+        del self.questions[qid]
+        self._save_questions()
+        return True
+
+    def project_questions(self, project_id: str) -> list[Question]:
+        return [q for q in self.questions.values() if q.project_id == project_id]
 
     # --- Context Stack ---
 
