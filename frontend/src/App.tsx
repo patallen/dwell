@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
 import type { Task, Project, FocusState } from "./api";
 import {
   fetchFocus,
   fetchContext,
   fetchTasks,
   fetchProjects,
-  fetchProject,
   createTask,
   createProject,
   updateTask,
@@ -24,6 +24,19 @@ function loeDot(loe: string | null) {
   return "bg-text-muted";
 }
 
+function ProjectRoute() {
+  const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+
+  const handleBack = async () => {
+    await popContext();
+    navigate("/");
+  };
+
+  if (!projectId) return null;
+  return <ProjectView projectId={projectId} onBack={handleBack} />;
+}
+
 function App() {
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [overlay, setOverlay] = useState<Overlay>(null);
@@ -31,20 +44,25 @@ function App() {
   const [findText, setFindText] = useState("");
   const [findResults, setFindResults] = useState<{ type: "task" | "project"; id: string; title: string; status: string }[]>([]);
   const [stackItems, setStackItems] = useState<ContextEntry[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [projectList, setProjectList] = useState<Project[]>([]);
   const captureRef = useRef<HTMLInputElement>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const isProjectView = location.pathname.startsWith("/project/");
 
   const refresh = useCallback(async () => {
     const state = await fetchFocus();
     setFocus(state);
-    // If focused on a project, show project view
+    // If focused on a project and not already viewing it, navigate
     if (state.state === "focused" && state.context?.type === "project" && state.project) {
-      setActiveProjectId(state.project.id);
+      if (!location.pathname.startsWith(`/project/${state.project.id}`)) {
+        navigate(`/project/${state.project.id}`, { replace: true });
+      }
     }
-  }, []);
+  }, [navigate, location.pathname]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { refresh(); }, []);
 
   const handlePick = async (task: Task, reason: string) => {
     await pushContext(task.id, "task", reason);
@@ -97,8 +115,8 @@ function App() {
     setFindText("");
     setFindResults([]);
     if (result.type === "project") {
-      setActiveProjectId(result.id);
       await pushContext(result.id, "project", "picked from search");
+      navigate(`/project/${result.id}`);
     } else {
       await pushContext(result.id, "task", "picked from search");
     }
@@ -115,22 +133,16 @@ function App() {
 
   const handleOpenProject = async (project: Project) => {
     setOverlay(null);
-    setActiveProjectId(project.id);
     await pushContext(project.id, "project", "opened");
+    navigate(`/project/${project.id}`);
     refresh();
   };
 
   const handleCreateProject = async () => {
     const project = await createProject({ title: "New project" });
     setOverlay(null);
-    setActiveProjectId(project.id);
     await pushContext(project.id, "project", "created");
-    refresh();
-  };
-
-  const handleBackFromProject = async () => {
-    setActiveProjectId(null);
-    await popContext();
+    navigate(`/project/${project.id}`);
     refresh();
   };
 
@@ -140,7 +152,6 @@ function App() {
 
       if (e.key === "Escape") {
         if (overlay) { setOverlay(null); setCaptureText(""); setFindText(""); setFindResults([]); return; }
-        if (activeProjectId) { handleBackFromProject(); return; }
         return;
       }
       if (overlay) return;
@@ -152,7 +163,7 @@ function App() {
       if (meta && e.key === ".") { e.preventDefault(); setOverlay("help"); return; }
       if (meta && e.key === ",") { e.preventDefault(); setOverlay("settings"); return; }
 
-      if (focus?.state === "focused" && focus.task) {
+      if (!isProjectView && focus?.state === "focused" && focus.task) {
         if (e.key === "d") { e.preventDefault(); handleDone(); return; }
         if (e.key === "x") { e.preventDefault(); handleDrop(); return; }
         if (e.key === "p") { e.preventDefault(); handlePause(); return; }
@@ -160,7 +171,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [overlay, focus]);
+  }, [overlay, focus, isProjectView]);
 
   const task = focus?.task;
   const suggestions = focus?.suggestions || [];
@@ -169,7 +180,7 @@ function App() {
     <div className="min-h-dvh flex flex-col bg-background font-sans text-text antialiased">
       {/* Header */}
       <header className="px-6 py-4 border-b border-border-subtle shrink-0 sm:px-10 flex items-center justify-between">
-        <span className="text-sm font-bold tracking-tight text-accent">adhdeez</span>
+        <span className="text-sm font-bold tracking-tight text-accent cursor-pointer" onClick={() => navigate("/")}>adhdeez</span>
         {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (
           <span className="text-xs text-text-muted">{focus.stack_depth - 1} paused</span>
         )}
@@ -268,96 +279,97 @@ function App() {
       )}
 
       {/* Main */}
-      <main className={`flex-1 flex ${activeProjectId ? "items-start" : "items-center"} justify-center p-6 sm:p-10 overflow-y-auto`}>
-
-        {/* Project View */}
-        {activeProjectId && (
-          <ProjectView projectId={activeProjectId} onBack={handleBackFromProject} />
-        )}
-
-        {/* Empty */}
-        {!activeProjectId && focus?.state === "empty" && (
-          <div className="text-center">
-            <p className="text-text-secondary text-xl">All clear.</p>
-            <p className="text-text-muted text-sm mt-4">
-              <kbd className="bg-surface border border-border px-1.5 py-0.5 rounded text-xs font-[inherit] text-text-muted mr-1">⌘I</kbd>
-              to capture something
-            </p>
-          </div>
-        )}
-
-        {/* Suggesting */}
-        {!activeProjectId && focus?.state === "suggesting" && suggestions.length > 0 && (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-12">
-            <h1 className="text-5xl sm:text-6xl font-semibold text-text-secondary text-center tracking-tight leading-none px-6">
-              What should we work on?
-            </h1>
-
-            <div className="w-full max-w-lg flex flex-col gap-2">
-              {suggestions.map(({ task: t, reason }) => (
-                <button
-                  key={t.id}
-                  onClick={() => handlePick(t, reason)}
-                  className="w-full text-left rounded-2xl border border-border bg-surface p-5 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`size-2 rounded-full shrink-0 ${loeDot(t.loe)}`} />
-                    <span className="text-lg font-semibold text-text group-hover:text-text tracking-tight">
-                      {t.title}
-                    </span>
-                    {reason && (
-                      <span className="ml-auto text-xs text-accent-dim shrink-0">{reason}</span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Focused */}
-        {!activeProjectId && focus?.state === "focused" && task && (
-          <div className="w-full max-w-xl">
-            <p className="text-text-muted text-sm mb-6 text-center">Working on</p>
-
-            <div className="relative rounded-2xl border border-accent/30 bg-surface p-6 sm:p-8 shadow-lg shadow-accent/5">
-              <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-accent rounded-r-full" />
-              <div className="flex items-center gap-2.5 mb-4">
-                <div className={`size-2 rounded-full ${loeDot(task.loe)}`} />
-                {focus.context?.reason && (
-                  <span className="text-xs text-accent-dim tracking-wide">{focus.context.reason}</span>
-                )}
-              </div>
-              <h1 className="text-2xl font-bold leading-snug tracking-tight text-text">
-                {task.title}
-              </h1>
-              {task.body && (
-                <p className="text-text-secondary text-sm mt-2 leading-relaxed">{task.body}</p>
+      <main className={`flex-1 flex ${isProjectView ? "items-start" : "items-center"} justify-center p-6 sm:p-10 overflow-y-auto`}>
+        <Routes>
+          <Route path="/project/:projectId" element={<ProjectRoute />} />
+          <Route path="*" element={
+            <>
+              {/* Empty */}
+              {focus?.state === "empty" && (
+                <div className="text-center">
+                  <p className="text-text-secondary text-xl">All clear.</p>
+                  <p className="text-text-muted text-sm mt-4">
+                    <kbd className="bg-surface border border-border px-1.5 py-0.5 rounded text-xs font-[inherit] text-text-muted mr-1">⌘I</kbd>
+                    to capture something
+                  </p>
+                </div>
               )}
 
-              <div className="flex gap-3 mt-6 pt-5 border-t border-border-subtle">
-                <button
-                  onClick={handleDone}
-                  className="h-10 px-6 rounded-xl bg-success/15 text-success text-sm font-semibold hover:bg-success/25 active:scale-[0.98] transition-all"
-                >
-                  Done
-                </button>
-                <button
-                  onClick={handlePause}
-                  className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-text-secondary hover:bg-surface-raised transition-colors"
-                >
-                  Pause
-                </button>
-                <button
-                  onClick={handleDrop}
-                  className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-urgent hover:bg-urgent/10 transition-colors"
-                >
-                  Drop
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+              {/* Suggesting */}
+              {focus?.state === "suggesting" && suggestions.length > 0 && (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-12">
+                  <h1 className="text-5xl sm:text-6xl font-semibold text-text-secondary text-center tracking-tight leading-none px-6">
+                    What should we work on?
+                  </h1>
+
+                  <div className="w-full max-w-lg flex flex-col gap-2">
+                    {suggestions.map(({ task: t, reason }) => (
+                      <button
+                        key={t.id}
+                        onClick={() => handlePick(t, reason)}
+                        className="w-full text-left rounded-2xl border border-border bg-surface p-5 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={`size-2 rounded-full shrink-0 ${loeDot(t.loe)}`} />
+                          <span className="text-lg font-semibold text-text group-hover:text-text tracking-tight">
+                            {t.title}
+                          </span>
+                          {reason && (
+                            <span className="ml-auto text-xs text-accent-dim shrink-0">{reason}</span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Focused */}
+              {focus?.state === "focused" && task && (
+                <div className="w-full max-w-xl">
+                  <p className="text-text-muted text-sm mb-6 text-center">Working on</p>
+
+                  <div className="relative rounded-2xl border border-accent/30 bg-surface p-6 sm:p-8 shadow-lg shadow-accent/5">
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-accent rounded-r-full" />
+                    <div className="flex items-center gap-2.5 mb-4">
+                      <div className={`size-2 rounded-full ${loeDot(task.loe)}`} />
+                      {focus.context?.reason && (
+                        <span className="text-xs text-accent-dim tracking-wide">{focus.context.reason}</span>
+                      )}
+                    </div>
+                    <h1 className="text-2xl font-bold leading-snug tracking-tight text-text">
+                      {task.title}
+                    </h1>
+                    {task.body && (
+                      <p className="text-text-secondary text-sm mt-2 leading-relaxed">{task.body}</p>
+                    )}
+
+                    <div className="flex gap-3 mt-6 pt-5 border-t border-border-subtle">
+                      <button
+                        onClick={handleDone}
+                        className="h-10 px-6 rounded-xl bg-success/15 text-success text-sm font-semibold hover:bg-success/25 active:scale-[0.98] transition-all"
+                      >
+                        Done
+                      </button>
+                      <button
+                        onClick={handlePause}
+                        className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-text-secondary hover:bg-surface-raised transition-colors"
+                      >
+                        Pause
+                      </button>
+                      <button
+                        onClick={handleDrop}
+                        className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-urgent hover:bg-urgent/10 transition-colors"
+                      >
+                        Drop
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          } />
+        </Routes>
       </main>
 
       {/* Footer */}
