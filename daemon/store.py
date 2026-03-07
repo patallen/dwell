@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from datetime import datetime
@@ -5,25 +6,36 @@ from pathlib import Path
 
 import yaml
 
-from models import Entity, EntityType
+from models import ContextEntry, Task
 
 
 class FileStore:
     def __init__(self, root: str):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.entities: dict[str, Entity] = {}
+        self.tasks: dict[str, Task] = {}
+        self.context_stack: list[ContextEntry] = []
         self._index()
+        self._load_context()
 
     def _index(self):
         """Walk the vault and parse all files into memory."""
-        self.entities.clear()
+        self.tasks.clear()
         for path in self.root.rglob("*.md"):
-            entity = self._parse_file(path)
-            if entity:
-                self.entities[entity.id] = entity
+            task = self._parse_file(path)
+            if task:
+                self.tasks[task.id] = task
 
-    def _parse_file(self, path: Path) -> Entity | None:
+    def _parse_datetime(self, meta: dict, key: str) -> datetime | None:
+        val = meta.get(key)
+        if not val:
+            return None
+        try:
+            return datetime.fromisoformat(str(val))
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_file(self, path: Path) -> Task | None:
         try:
             content = path.read_text()
         except Exception:
@@ -44,124 +56,220 @@ class FileStore:
         if not isinstance(meta, dict):
             return None
 
-        entity_id = meta.get("id", str(path.relative_to(self.root)).removesuffix(".md"))
+        task_id = meta.get("id", str(path.relative_to(self.root)).removesuffix(".md"))
 
-        due = None
-        if meta.get("due"):
-            try:
-                due = datetime.fromisoformat(meta["due"])
-            except (ValueError, TypeError):
-                pass
-
-        created = datetime.now()
-        if meta.get("created"):
-            try:
-                created = datetime.fromisoformat(meta["created"])
-            except (ValueError, TypeError):
-                pass
-
-        updated = datetime.now()
-        if meta.get("updated"):
-            try:
-                updated = datetime.fromisoformat(meta["updated"])
-            except (ValueError, TypeError):
-                pass
-
-        return Entity(
-            id=entity_id,
-            type=EntityType(meta.get("type", "thought")),
+        return Task(
+            id=task_id,
             title=meta.get("title", ""),
             body=parts[1].strip(),
-            tags=meta.get("tags", []),
-            links=meta.get("links", []),
-            status=meta.get("status", "inbox"),
-            priority=meta.get("priority"),
-            due=due,
-            created_at=created,
-            updated_at=updated,
+            status=meta.get("status", "open"),
+            loe=meta.get("loe"),
+            deadline=self._parse_datetime(meta, "deadline"),
+            parent=meta.get("parent"),
+            created_at=self._parse_datetime(meta, "created") or datetime.now(),
+            updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
+            last_viewed=self._parse_datetime(meta, "last_viewed"),
             file_path=str(path),
         )
 
-    def create(self, entity: Entity) -> Entity:
-        if not entity.id:
-            entity.id = uuid.uuid4().hex[:8]
-        entity.created_at = datetime.now()
-        entity.updated_at = datetime.now()
-        if not entity.file_path:
-            entity.file_path = str(self.root / f"{entity.id}.md")
-        self._write_file(entity)
-        self.entities[entity.id] = entity
-        return entity
+    def create(self, task: Task) -> Task:
+        if not task.id:
+            task.id = uuid.uuid4().hex[:8]
+        task.created_at = datetime.now()
+        task.updated_at = datetime.now()
+        if not task.file_path:
+            task.file_path = str(self.root / f"{task.id}.md")
+        self._write_file(task)
+        self.tasks[task.id] = task
+        return task
 
-    def get(self, entity_id: str) -> Entity | None:
-        return self.entities.get(entity_id)
+    def get(self, task_id: str, track_view: bool = False) -> Task | None:
+        task = self.tasks.get(task_id)
+        if task and track_view:
+            task.last_viewed = datetime.now()
+            self._write_file(task)
+        return task
 
-    def update(self, entity: Entity) -> Entity:
-        entity.updated_at = datetime.now()
-        self._write_file(entity)
-        self.entities[entity.id] = entity
-        return entity
+    def update(self, task: Task) -> Task:
+        task.updated_at = datetime.now()
+        self._write_file(task)
+        self.tasks[task.id] = task
+        return task
 
-    def delete(self, entity_id: str) -> bool:
-        entity = self.entities.get(entity_id)
-        if not entity:
+    def delete(self, task_id: str) -> bool:
+        task = self.tasks.get(task_id)
+        if not task:
             return False
         try:
-            os.remove(entity.file_path)
+            os.remove(task.file_path)
         except FileNotFoundError:
             pass
-        del self.entities[entity_id]
+        del self.tasks[task_id]
         return True
 
     def query(
         self,
-        entity_type: EntityType | None = None,
         status: str | None = None,
-        priority: str | None = None,
-        tags: list[str] | None = None,
+        loe: str | None = None,
         search: str | None = None,
-    ) -> list[Entity]:
+    ) -> list[Task]:
         results = []
-        for e in self.entities.values():
-            if entity_type and e.type != entity_type:
+        for t in self.tasks.values():
+            if status and t.status != status:
                 continue
-            if status and e.status != status:
-                continue
-            if priority and e.priority != priority:
-                continue
-            if tags and not any(t in e.tags for t in tags):
+            if loe and t.loe != loe:
                 continue
             if search:
                 q = search.lower()
-                if q not in e.title.lower() and q not in e.body.lower():
+                if q not in t.title.lower() and q not in t.body.lower():
                     continue
-            results.append(e)
+            results.append(t)
         return results
 
-    def inbox(self) -> list[Entity]:
-        return self.query(status="inbox")
+    def focus(self) -> list[Task]:
+        """Return open tasks ranked for the focus view."""
+        open_tasks = [t for t in self.tasks.values() if t.status == "open"]
+        open_tasks.sort(key=lambda t: self._score(t), reverse=True)
+        return open_tasks
 
-    def _write_file(self, entity: Entity):
-        path = Path(entity.file_path)
+    def _score(self, task: Task) -> float:
+        now = datetime.now()
+        s = 0.0
+
+        if task.deadline:
+            hours_until = (task.deadline - now).total_seconds() / 3600
+            if hours_until < 0:
+                s += 100
+            elif hours_until < 24:
+                s += 50
+            elif hours_until < 72:
+                s += 30
+            elif hours_until < 168:
+                s += 15
+
+        if task.loe == "hot":
+            s += 20
+        elif task.loe == "warm":
+            s += 10
+
+        return s
+
+    def _score_reason(self, task: Task) -> str:
+        """Human-readable reason why this task was suggested."""
+        now = datetime.now()
+        reasons = []
+
+        if task.deadline:
+            hours_until = (task.deadline - now).total_seconds() / 3600
+            if hours_until < 0:
+                reasons.append("overdue")
+            elif hours_until < 24:
+                reasons.append("due today")
+            elif hours_until < 48:
+                reasons.append("due tomorrow")
+            elif hours_until < 168:
+                reasons.append("due this week")
+
+        if task.loe == "hot":
+            reasons.append("quick win")
+
+        return " · ".join(reasons) if reasons else "highest priority"
+
+    def suggest(self, skip_ids: list[str] | None = None, limit: int = 5) -> list[dict]:
+        """Return top task suggestions with reasoning."""
+        open_tasks = [t for t in self.tasks.values() if t.status == "open"]
+        if skip_ids:
+            open_tasks = [t for t in open_tasks if t.id not in skip_ids]
+        open_tasks.sort(key=lambda t: self._score(t), reverse=True)
+        return [
+            {"task": t, "reason": self._score_reason(t)}
+            for t in open_tasks[:limit]
+        ]
+
+    # --- Context Stack ---
+
+    def _context_path(self) -> Path:
+        return self.root / ".context_stack.json"
+
+    def _load_context(self):
+        path = self._context_path()
+        if not path.exists():
+            self.context_stack = []
+            return
+        try:
+            data = json.loads(path.read_text())
+            self.context_stack = [
+                ContextEntry(
+                    type=e["type"],
+                    ref_id=e["ref_id"],
+                    reason=e.get("reason", ""),
+                    pushed_at=datetime.fromisoformat(e["pushed_at"]),
+                )
+                for e in data
+            ]
+        except (json.JSONDecodeError, KeyError):
+            self.context_stack = []
+
+    def _save_context(self):
+        data = [
+            {
+                "type": e.type,
+                "ref_id": e.ref_id,
+                "reason": e.reason,
+                "pushed_at": e.pushed_at.isoformat(),
+            }
+            for e in self.context_stack
+        ]
+        self._context_path().write_text(json.dumps(data, indent=2))
+
+    def context_push(self, entry: ContextEntry) -> list[ContextEntry]:
+        # Remove if already in stack (will re-push to top)
+        self.context_stack = [e for e in self.context_stack if e.ref_id != entry.ref_id]
+        self.context_stack.insert(0, entry)
+        self._save_context()
+        return self.context_stack
+
+    def context_pop(self) -> ContextEntry | None:
+        if not self.context_stack:
+            return None
+        entry = self.context_stack.pop(0)
+        self._save_context()
+        return entry
+
+    def context_peek(self) -> ContextEntry | None:
+        return self.context_stack[0] if self.context_stack else None
+
+    def context_get(self) -> list[ContextEntry]:
+        return self.context_stack
+
+    def context_remove(self, ref_id: str) -> bool:
+        before = len(self.context_stack)
+        self.context_stack = [e for e in self.context_stack if e.ref_id != ref_id]
+        if len(self.context_stack) < before:
+            self._save_context()
+            return True
+        return False
+
+    def _write_file(self, task: Task):
+        path = Path(task.file_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         meta: dict = {
-            "id": entity.id,
-            "type": entity.type.value,
-            "title": entity.title,
-            "status": entity.status,
-            "created": entity.created_at.isoformat(),
-            "updated": entity.updated_at.isoformat(),
+            "id": task.id,
+            "title": task.title,
+            "status": task.status,
+            "created": task.created_at.isoformat(),
+            "updated": task.updated_at.isoformat(),
         }
-        if entity.tags:
-            meta["tags"] = entity.tags
-        if entity.links:
-            meta["links"] = entity.links
-        if entity.priority:
-            meta["priority"] = entity.priority
-        if entity.due:
-            meta["due"] = entity.due.isoformat()
+        if task.loe:
+            meta["loe"] = task.loe
+        if task.deadline:
+            meta["deadline"] = task.deadline.isoformat()
+        if task.parent:
+            meta["parent"] = task.parent
+        if task.last_viewed:
+            meta["last_viewed"] = task.last_viewed.isoformat()
 
         frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
-        content = f"---\n{frontmatter}---\n\n{entity.body}\n"
+        content = f"---\n{frontmatter}---\n\n{task.body}\n"
         path.write_text(content)

@@ -1,12 +1,13 @@
 import os
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from models import EntityType
+from models import ContextEntry, Task
 from store import FileStore
 
 VAULT_PATH = os.environ.get("ADHDEEZ_VAULT", str(Path.home() / ".adhdeez"))
@@ -22,89 +23,178 @@ app.add_middleware(
 )
 
 
-class CreateEntityRequest(BaseModel):
-    type: str = "thought"
+class CreateTaskRequest(BaseModel):
     title: str
     body: str = ""
-    tags: list[str] = []
-    status: str = "inbox"
-    priority: str | None = None
-    due: str | None = None
+    status: str = "open"
+    loe: str | None = None
+    deadline: str | None = None
+    parent: str | None = None
 
 
-class UpdateEntityRequest(BaseModel):
+class UpdateTaskRequest(BaseModel):
     title: str | None = None
     body: str | None = None
-    tags: list[str] | None = None
     status: str | None = None
-    priority: str | None = None
-    due: str | None = None
+    loe: str | None = None
+    deadline: str | None = None
+    parent: str | None = None
 
 
-@app.get("/entities")
-def list_entities(
-    type: str | None = None,
+class ContextPushRequest(BaseModel):
+    type: str = "task"
+    ref_id: str
+    reason: str = ""
+
+
+# --- Focus ---
+
+
+@app.get("/focus")
+def get_focus():
+    """Returns context-aware focus state: current focus or suggestion."""
+    top = store.context_peek()
+    if top:
+        task = store.get(top.ref_id, track_view=True) if top.type == "task" else None
+        # If the referenced task is no longer open, pop it and recurse
+        if top.type == "task" and (not task or task.status != "open"):
+            store.context_pop()
+            return get_focus()
+        return {
+            "state": "focused",
+            "context": {
+                "type": top.type,
+                "ref_id": top.ref_id,
+                "reason": top.reason,
+                "pushed_at": top.pushed_at.isoformat(),
+            },
+            "task": asdict(task) if task else None,
+            "stack_depth": len(store.context_stack),
+        }
+
+    # No current focus — suggest options
+    suggestions = store.suggest()
+    if not suggestions:
+        return {"state": "empty", "suggestions": []}
+
+    return {
+        "state": "suggesting",
+        "suggestions": [
+            {"task": asdict(s["task"]), "reason": s["reason"]}
+            for s in suggestions
+        ],
+    }
+
+
+# --- Context Stack ---
+
+
+@app.get("/context")
+def get_context():
+    stack = store.context_get()
+    result = []
+    for entry in stack:
+        item = {
+            "type": entry.type,
+            "ref_id": entry.ref_id,
+            "reason": entry.reason,
+            "pushed_at": entry.pushed_at.isoformat(),
+        }
+        if entry.type == "task":
+            task = store.get(entry.ref_id)
+            item["task"] = asdict(task) if task else None
+        result.append(item)
+    return result
+
+
+@app.post("/context/push")
+def push_context(req: ContextPushRequest):
+    entry = ContextEntry(
+        type=req.type,
+        ref_id=req.ref_id,
+        reason=req.reason,
+        pushed_at=datetime.now(),
+    )
+    store.context_push(entry)
+    return get_focus()
+
+
+@app.post("/context/pop")
+def pop_context():
+    store.context_pop()
+    return get_focus()
+
+
+# --- Tasks ---
+
+
+@app.get("/tasks")
+def list_tasks(
     status: str | None = None,
-    priority: str | None = None,
+    loe: str | None = None,
     search: str | None = None,
 ):
-    entity_type = EntityType(type) if type else None
-    results = store.query(entity_type=entity_type, status=status, priority=priority, search=search)
-    return [asdict(e) for e in results]
+    results = store.query(status=status, loe=loe, search=search)
+    return [asdict(t) for t in results]
 
 
-@app.get("/inbox")
-def get_inbox():
-    return [asdict(e) for e in store.inbox()]
-
-
-@app.get("/entities/{entity_id}")
-def get_entity(entity_id: str):
-    entity = store.get(entity_id)
-    if not entity:
+@app.get("/tasks/{task_id}")
+def get_task(task_id: str):
+    task = store.get(task_id, track_view=True)
+    if not task:
         raise HTTPException(404, "not found")
-    return asdict(entity)
+    return asdict(task)
 
 
-@app.post("/entities")
-def create_entity(req: CreateEntityRequest):
-    from models import Entity
+@app.post("/tasks")
+def create_task(req: CreateTaskRequest):
+    deadline = None
+    if req.deadline:
+        try:
+            deadline = datetime.fromisoformat(req.deadline)
+        except ValueError:
+            raise HTTPException(400, "invalid deadline format")
 
-    entity = Entity(
+    task = Task(
         id="",
-        type=EntityType(req.type),
         title=req.title,
         body=req.body,
-        tags=req.tags,
         status=req.status,
-        priority=req.priority,
+        loe=req.loe,
+        deadline=deadline,
+        parent=req.parent,
     )
-    created = store.create(entity)
+    created = store.create(task)
     return asdict(created)
 
 
-@app.patch("/entities/{entity_id}")
-def update_entity(entity_id: str, req: UpdateEntityRequest):
-    entity = store.get(entity_id)
-    if not entity:
+@app.patch("/tasks/{task_id}")
+def update_task(task_id: str, req: UpdateTaskRequest):
+    task = store.get(task_id)
+    if not task:
         raise HTTPException(404, "not found")
     if req.title is not None:
-        entity.title = req.title
+        task.title = req.title
     if req.body is not None:
-        entity.body = req.body
-    if req.tags is not None:
-        entity.tags = req.tags
+        task.body = req.body
     if req.status is not None:
-        entity.status = req.status
-    if req.priority is not None:
-        entity.priority = req.priority
-    updated = store.update(entity)
+        task.status = req.status
+    if req.loe is not None:
+        task.loe = req.loe
+    if req.deadline is not None:
+        try:
+            task.deadline = datetime.fromisoformat(req.deadline)
+        except ValueError:
+            raise HTTPException(400, "invalid deadline format")
+    if req.parent is not None:
+        task.parent = req.parent
+    updated = store.update(task)
     return asdict(updated)
 
 
-@app.delete("/entities/{entity_id}")
-def delete_entity(entity_id: str):
-    if not store.delete(entity_id):
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: str):
+    if not store.delete(task_id):
         raise HTTPException(404, "not found")
     return {"ok": True}
 
