@@ -1,21 +1,21 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
-import type { Task, Project, FocusState, EnergyLevel } from "./api";
+import type { Task, Note, FocusState, EnergyLevel } from "./api";
 import {
   fetchFocus,
   fetchContext,
   fetchTasks,
-  fetchProjects,
+  fetchNotes,
   createTask,
-  createProject,
+  createNote,
   updateTask,
   pushContext,
   popContext,
   removeContext,
-  setContextNote,
+  setContextMemo,
 } from "./api";
 import type { ContextEntry } from "./api";
-import ProjectView from "./components/ProjectView";
+import NoteView from "./components/NoteView";
 import WhereWasI from "./components/WhereWasI";
 import NoteToSelf from "./components/NoteToSelf";
 import AmbientPulse from "./components/AmbientPulse";
@@ -39,7 +39,7 @@ function isColdStart(): boolean {
   }
 }
 
-type Overlay = null | "capture" | "find" | "stack" | "projects" | "help" | "settings";
+type Overlay = null | "capture" | "find" | "stack" | "notes" | "help" | "settings";
 
 type PendingAction =
   | { type: "push"; refId: string; refType: string; reason: string }
@@ -54,16 +54,17 @@ function loeDot(loe: string | null) {
   return "bg-text-muted";
 }
 
-function ProjectRoute() {
-  const { projectId } = useParams<{ projectId: string }>();
+function NoteRoute() {
+  const { noteId } = useParams<{ noteId: string }>();
   const navigate = useNavigate();
 
-  const handleBack = () => {
-    navigate("/");
-  };
-
-  if (!projectId) return null;
-  return <ProjectView projectId={projectId} onBack={handleBack} />;
+  if (!noteId) return null;
+  return (
+    <NoteView
+      noteId={noteId}
+      onBack={() => navigate("/")}
+    />
+  );
 }
 
 function App() {
@@ -73,9 +74,9 @@ function App() {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [captureText, setCaptureText] = useState("");
   const [findText, setFindText] = useState("");
-  const [findResults, setFindResults] = useState<{ type: "task" | "project"; id: string; title: string; status: string }[]>([]);
+  const [findResults, setFindResults] = useState<{ type: "task" | "note"; id: string; title: string; status: string }[]>([]);
   const [stackItems, setStackItems] = useState<ContextEntry[]>([]);
-  const [projectList, setProjectList] = useState<Project[]>([]);
+  const [noteList, setNoteList] = useState<Note[]>([]);
   const [showWhereWasI, setShowWhereWasI] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const captureRef = useRef<HTMLInputElement>(null);
@@ -84,7 +85,7 @@ function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const isProjectView = location.pathname.startsWith("/project/");
+  const isNoteView = location.pathname.startsWith("/note/");
 
   const applyFocus = useCallback((state: FocusState) => {
     setFocus(state);
@@ -96,7 +97,7 @@ function App() {
   }, [applyFocus, energy]);
 
   useEffect(() => {
-    if (showLanding) return; // Don't fetch until landing is dismissed
+    if (showLanding) return;
     fetchFocus(energy ?? undefined).then(applyFocus);
   }, [applyFocus, energy, location.pathname, showLanding]);
 
@@ -105,14 +106,12 @@ function App() {
     setShowLanding(false);
   }, []);
 
-  // Execute an action that leaves the current focus, optionally with a note
-  const executeAction = useCallback(async (action: PendingAction, note?: string) => {
+  const executeAction = useCallback(async (action: PendingAction, memo?: string) => {
     let showRestore = false;
 
     if (action.type === "push") {
-      const result = await pushContext(action.refId, action.refType, action.reason, note);
-      // Check for note-based restoration before refreshing with energy
-      if (result.state === "focused" && result.context?.note) {
+      const result = await pushContext(action.refId, action.refType, action.reason, memo);
+      if (result.state === "focused" && result.context?.memo) {
         showRestore = true;
       }
     } else if (action.type === "pause") {
@@ -142,31 +141,31 @@ function App() {
       }
     }
 
-    // Refresh with energy param to get correctly ranked suggestions
     await refresh();
     if (showRestore) {
       setShowWhereWasI(true);
     }
   }, [focus, refresh]);
 
-  // Initiate an action — show note prompt only when the current entry stays in the stack (push)
   const initiateAction = useCallback((action: PendingAction) => {
-    // If WhereWasI is showing, dismiss it (user has seen it, clear the note)
     if (showWhereWasI) {
       setShowWhereWasI(false);
-      void setContextNote("");
+      void setContextMemo("");
     }
-    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.project)) {
-      // Switching to something new — current entry stays in stack, note is useful
+    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.note)) {
       setPendingAction(action);
     } else {
-      // Pause/done/drop — current entry is removed from stack, note would be lost
       void executeAction(action);
     }
   }, [focus, executeAction, showWhereWasI]);
 
-  const handlePick = (task: Task, reason: string) => {
-    initiateAction({ type: "push", refId: task.id, refType: "task", reason });
+  const handlePick = (suggestion: { type: "task" | "note"; task?: Task; note?: Note; reason: string }) => {
+    if (suggestion.type === "note" && suggestion.note) {
+      navigate(`/note/${suggestion.note.id}`);
+      initiateAction({ type: "push", refId: suggestion.note.id, refType: "note", reason: suggestion.reason });
+    } else if (suggestion.task) {
+      initiateAction({ type: "push", refId: suggestion.task.id, refType: "task", reason: suggestion.reason });
+    }
   };
 
   const handleDone = useCallback(() => {
@@ -195,22 +194,23 @@ function App() {
   const handleFind = async (query: string) => {
     setFindText(query);
     if (!query.trim()) { setFindResults([]); return; }
-    const [tasks, projects] = await Promise.all([
+    const [tasks, notes] = await Promise.all([
       fetchTasks({ search: query.trim() }),
-      fetchProjects({ search: query.trim() }),
+      fetchNotes({ search: query.trim() }),
     ]);
     setFindResults([
-      ...projects.map(p => ({ type: "project" as const, id: p.id, title: p.title, status: p.status })),
+      ...notes.map(n => ({ type: "note" as const, id: n.id, title: n.title, status: n.status })),
       ...tasks.map(t => ({ type: "task" as const, id: t.id, title: t.title, status: t.status })),
     ]);
   };
 
-  const handleFindSelect = (result: { type: "task" | "project"; id: string }) => {
+  const handleFindSelect = (result: { type: "task" | "note"; id: string }) => {
     setOverlay(null);
     setFindText("");
     setFindResults([]);
-    if (result.type === "project") {
-      navigate(`/project/${result.id}`);
+    if (result.type === "note") {
+      navigate(`/note/${result.id}`);
+      return;
     }
     initiateAction({ type: "push", refId: result.id, refType: result.type, reason: "picked from search" });
   };
@@ -219,19 +219,19 @@ function App() {
     setStackItems(await fetchContext());
   };
 
-  const loadProjects = async () => {
-    setProjectList(await fetchProjects({ status: "active" }));
+  const loadNotes = async () => {
+    setNoteList(await fetchNotes({ status: "active" }));
   };
 
-  const handleOpenProject = (project: Project) => {
+  const handleOpenNote = (note: Note) => {
     setOverlay(null);
-    navigate(`/project/${project.id}`);
+    navigate(`/note/${note.id}`);
   };
 
-  const handleCreateProject = async () => {
-    const project = await createProject({ title: "New project" });
+  const handleCreateNote = async (noteType?: string) => {
+    const note = await createNote({ title: "Untitled", note_type: noteType });
     setOverlay(null);
-    navigate(`/project/${project.id}`);
+    navigate(`/note/${note.id}`);
   };
 
   useEffect(() => {
@@ -247,11 +247,11 @@ function App() {
       if (meta && e.key === "i") { e.preventDefault(); setCaptureText(""); setOverlay("capture"); return; }
       if (meta && e.key === "/") { e.preventDefault(); setFindText(""); setFindResults([]); setOverlay("find"); return; }
       if (meta && e.key === "j") { e.preventDefault(); void loadStack(); setOverlay("stack"); return; }
-      if (meta && e.key === "p") { e.preventDefault(); void loadProjects(); setOverlay("projects"); return; }
+      if (meta && e.key === "p") { e.preventDefault(); void loadNotes(); setOverlay("notes"); return; }
       if (meta && e.key === ".") { e.preventDefault(); setOverlay("help"); return; }
       if (meta && e.key === ",") { e.preventDefault(); setOverlay("settings"); return; }
 
-      if (!isProjectView && focus?.state === "focused" && focus.task) {
+      if (!isNoteView && focus?.state === "focused" && focus.task) {
         if (e.key === "d") { e.preventDefault(); void handleDone(); return; }
         if (e.key === "x") { e.preventDefault(); void handleDrop(); return; }
         if (e.key === "p") { e.preventDefault(); void handlePause(); return; }
@@ -259,7 +259,7 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [overlay, pendingAction, focus, isProjectView, handleDone, handleDrop, handlePause]);
+  }, [overlay, pendingAction, focus, isNoteView, handleDone, handleDrop, handlePause]);
 
   const task = focus?.task;
   const suggestions = focus?.suggestions || [];
@@ -277,8 +277,8 @@ function App() {
           <div
             className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer group"
             onClick={() => {
-              if (focus.context?.type === "project" && focus.project) {
-                navigate(`/project/${focus.project.id}`);
+              if (focus.context?.type === "note" && focus.note) {
+                navigate(`/note/${focus.note.id}`);
               } else {
                 navigate("/");
               }
@@ -286,7 +286,7 @@ function App() {
           >
             <span className="text-text-muted text-xs shrink-0">→</span>
             <span className="text-xs text-text-secondary truncate group-hover:text-text transition-colors">
-              {focus.task?.title || focus.project?.title}
+              {focus.task?.title || focus.note?.title}
             </span>
           </div>
         )}
@@ -316,7 +316,7 @@ function App() {
                   {findResults.map(r => (
                     <li key={`${r.type}-${r.id}`} onClick={() => void handleFindSelect(r)}
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
-                      <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.type === "project" ? "bg-accent/15 text-accent-dim" : "bg-background text-text-muted"}`}>{r.type === "project" ? "proj" : "task"}</span>
+                      <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.type === "note" ? "bg-accent/15 text-accent-dim" : "bg-background text-text-muted"}`}>{r.type}</span>
                       <span>{r.title}</span>
                       <span className="ml-auto text-xs uppercase tracking-wider text-text-muted">{r.status}</span>
                     </li>
@@ -337,13 +337,13 @@ function App() {
                       {i > 0 && <span className="size-1.5 rounded-full bg-text-muted/40 shrink-0" />}
                       <div className="flex flex-col min-w-0">
                         <span className={i === 0 ? "font-medium" : "text-text-secondary"}>
-                          {entry.task?.title || entry.project?.title || entry.ref_id}
+                          {entry.task?.title || entry.note?.title || entry.question?.question || entry.ref_id}
                         </span>
-                        {entry.note && (
-                          <span className="text-xs text-accent-dim italic truncate">&ldquo;{entry.note}&rdquo;</span>
+                        {entry.memo && (
+                          <span className="text-xs text-accent-dim italic truncate">&ldquo;{entry.memo}&rdquo;</span>
                         )}
                       </div>
-                      {entry.reason && !entry.note && <span className="ml-auto text-xs text-text-muted shrink-0">{entry.reason}</span>}
+                      {entry.reason && !entry.memo && <span className="ml-auto text-xs text-text-muted shrink-0">{entry.reason}</span>}
                       <button
                         onClick={async () => {
                           await removeContext(entry.ref_id);
@@ -358,29 +358,38 @@ function App() {
               ) : <p className="text-sm text-text-muted mb-2">stack is empty</p>}
               <span className="text-xs text-text-muted pt-2.5 border-t border-border">hover to remove · esc to close</span>
             </>}
-            {overlay === "projects" && <>
+            {overlay === "notes" && <>
               <div className="flex items-center justify-between mb-3.5">
-                <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold">Projects</h3>
-                <button onClick={() => void handleCreateProject()} className="text-xs text-accent hover:text-accent/80 transition-colors">+ new</button>
+                <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold">Notes</h3>
+                <div className="flex gap-2">
+                  <button onClick={() => void handleCreateNote()} className="text-xs text-accent hover:text-accent/80">+ note</button>
+                  <button onClick={() => void handleCreateNote("project")} className="text-xs text-accent hover:text-accent/80">+ project</button>
+                  <button onClick={() => void handleCreateNote("research")} className="text-xs text-accent hover:text-accent/80">+ research</button>
+                </div>
               </div>
-              {projectList.length > 0 ? (
+              {noteList.length > 0 ? (
                 <ul className="flex-1 overflow-y-auto mb-2">
-                  {projectList.map(p => (
-                    <li key={p.id} onClick={() => void handleOpenProject(p)}
+                  {noteList.map(n => (
+                    <li key={n.id} onClick={() => void handleOpenNote(n)}
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
-                      <span>{p.title}</span>
-                      <span className="ml-auto text-xs text-text-muted">{p.status}</span>
+                      {n.note_type && (
+                        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent/10 text-accent-dim shrink-0">
+                          {n.note_type === "one_on_one" ? "1:1" : n.note_type}
+                        </span>
+                      )}
+                      <span>{n.title}</span>
+                      <span className="ml-auto text-xs text-text-muted">{n.status}</span>
                     </li>
                   ))}
                 </ul>
-              ) : <p className="text-sm text-text-muted mb-2">no projects yet</p>}
+              ) : <p className="text-sm text-text-muted mb-2">no notes yet</p>}
               <span className="text-xs text-text-muted pt-2.5 border-t border-border">click to open · esc to close</span>
             </>}
             {overlay === "help" && <>
               <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3.5">Keyboard Shortcuts</h3>
               <ul className="mb-2">
                 {[
-                  ["Quick capture", "⌘I"], ["Find", "⌘/"], ["Stack", "⌘J"], ["Projects", "⌘P"],
+                  ["Quick capture", "⌘I"], ["Find", "⌘/"], ["Stack", "⌘J"], ["Notes", "⌘P"],
                   ["Accept suggestion", "Enter / Y"], ["Skip suggestion", "N / Tab"],
                   ["Done", "D"], ["Drop", "X"], ["Pause (put back)", "P"],
                   ["Help", "⌘."], ["Settings", "⌘,"], ["Close / back", "Esc"],
@@ -482,10 +491,10 @@ function App() {
       {/* Note to self prompt */}
       {pendingAction && (
         <NoteToSelf
-          taskTitle={focus?.task?.title || focus?.project?.title || "current task"}
-          onSubmit={(note) => {
+          taskTitle={focus?.task?.title || focus?.note?.title || "current task"}
+          onSubmit={(memo) => {
             setPendingAction(null);
-            void executeAction(pendingAction, note);
+            void executeAction(pendingAction, memo);
           }}
           onSkip={() => {
             setPendingAction(null);
@@ -494,22 +503,21 @@ function App() {
         />
       )}
 
-      {/* Where Was I restoration card — hide when NoteToSelf is active */}
+      {/* Where Was I restoration card */}
       {showWhereWasI && !pendingAction && focus?.state === "focused" && (
         <WhereWasI
           focus={focus}
           onDismiss={() => {
             setShowWhereWasI(false);
-            // Clear the note so it doesn't show again on next visit
-            void setContextNote("");
+            void setContextMemo("");
           }}
         />
       )}
 
       {/* Main */}
-      <main className={`flex-1 flex ${isProjectView ? "items-start" : focus?.state === "empty" ? "items-center" : "items-start"} justify-center p-6 sm:p-10 overflow-y-auto`}>
+      <main className={`flex-1 flex ${isNoteView ? "items-start" : focus?.state === "empty" ? "items-center" : "items-start"} justify-center p-6 sm:p-10 overflow-y-auto`}>
         <Routes>
-          <Route path="/project/:projectId" element={<ProjectRoute />} />
+          <Route path="/note/:noteId" element={<NoteRoute />} />
           <Route path="*" element={
             <>
               {/* Empty */}
@@ -527,14 +535,14 @@ function App() {
               {(focus?.state === "focused" || focus?.state === "suggesting") && (
                 <div className="w-full max-w-xl flex flex-col gap-6">
                   {/* Current focus */}
-                  {focus.state === "focused" && (task || focus.project) && (
+                  {focus.state === "focused" && (task || focus.note) && (
                     <div>
                       <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">Working on</p>
                       <div
-                        className={`relative rounded-2xl border border-accent/30 bg-surface p-5 sm:p-6 shadow-lg shadow-accent/5 ${focus.project ? "cursor-pointer hover:border-accent/50 transition-colors" : ""}`}
+                        className={`relative rounded-2xl border border-accent/30 bg-surface p-5 sm:p-6 shadow-lg shadow-accent/5 ${focus.note ? "cursor-pointer hover:border-accent/50 transition-colors" : ""}`}
                         onClick={() => {
-                          if (focus.project) {
-                            navigate(`/project/${focus.project.id}`);
+                          if (focus.note) {
+                            navigate(`/note/${focus.note.id}`);
                           }
                         }}
                       >
@@ -546,7 +554,7 @@ function App() {
                           )}
                         </div>
                         <h1 className="text-xl font-bold leading-snug tracking-tight text-text">
-                          {task?.title || focus.project?.title}
+                          {task?.title || focus.note?.title}
                         </h1>
                         {task?.body && (
                           <p className="text-text-secondary text-sm mt-1.5 leading-relaxed">{task.body}</p>
@@ -587,23 +595,34 @@ function App() {
                         {focus.state === "focused" ? "Up next" : "What should we work on?"}
                       </p>
                       <div className="flex flex-col gap-2">
-                        {suggestions.map(({ task: t, reason }) => (
-                          <button
-                            key={t.id}
-                            onClick={() => void handlePick(t, reason)}
-                            className="w-full text-left rounded-2xl border border-border bg-surface p-4 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className={`size-2 rounded-full shrink-0 ${loeDot(t.loe)}`} />
-                              <span className="text-sm font-semibold text-text group-hover:text-text tracking-tight">
-                                {t.title}
-                              </span>
-                              {reason && (
-                                <span className="ml-auto text-xs text-accent-dim shrink-0">{reason}</span>
-                              )}
-                            </div>
-                          </button>
-                        ))}
+                        {suggestions.map((s) => {
+                          const id = s.task?.id || s.note?.id || "";
+                          const title = s.task?.title || s.note?.title || "";
+                          return (
+                            <button
+                              key={id}
+                              onClick={() => void handlePick(s)}
+                              className="w-full text-left rounded-2xl border border-border bg-surface p-4 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
+                            >
+                              <div className="flex items-center gap-3">
+                                {s.type === "task" && s.task && (
+                                  <div className={`size-2 rounded-full shrink-0 ${loeDot(s.task.loe)}`} />
+                                )}
+                                {s.type === "note" && (
+                                  <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent/10 text-accent-dim shrink-0">
+                                    {s.note?.note_type === "one_on_one" ? "1:1" : s.note?.note_type || "note"}
+                                  </span>
+                                )}
+                                <span className="text-sm font-semibold text-text group-hover:text-text tracking-tight">
+                                  {title}
+                                </span>
+                                {s.reason && (
+                                  <span className="ml-auto text-xs text-accent-dim shrink-0">{s.reason}</span>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -614,7 +633,7 @@ function App() {
         </Routes>
       </main>
 
-      {/* Session guardrail — suppress when overlay or modal is active */}
+      {/* Session guardrail */}
       {sessionTimer.showWave && !overlay && !pendingAction && (
         <GentleWave
           minutes={sessionTimer.sessionMinutes}
@@ -628,7 +647,7 @@ function App() {
         <span>⌘I capture</span>
         <span>⌘/ find</span>
         <span>⌘J stack</span>
-        <span>⌘P projects</span>
+        <span>⌘P notes</span>
         <span>⌘. help</span>
         {bodyPrompts.activePrompts.length > 0 && (
           <div className="ml-auto flex items-center gap-4">

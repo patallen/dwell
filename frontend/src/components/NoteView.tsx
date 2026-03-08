@@ -1,16 +1,20 @@
 import { useState, useEffect, useRef } from "react";
-import type { Project, Task, Question } from "../api";
-import { fetchProject, updateProject, fetchProjectTasks, fetchQuestions, createTask, updateTask, deleteTask, createQuestion, updateQuestion, deleteQuestion } from "../api";
+import type { Note, Task, Question } from "../api";
+import {
+  fetchNote, updateNote, fetchNoteTasks, fetchNoteQuestions,
+  createTask, updateTask, deleteTask,
+  createQuestion, updateQuestion, deleteQuestion,
+} from "../api";
 import Editor from "./Editor";
 import type { QuestionMenuAction } from "./Editor";
 
-interface ProjectViewProps {
-  projectId: string;
+interface NoteViewProps {
+  noteId: string;
   onBack: () => void;
 }
 
-export default function ProjectView({ projectId }: ProjectViewProps) {
-  const [project, setProject] = useState<Project | null>(null);
+export default function NoteView({ noteId, onBack }: NoteViewProps) {
+  const [note, setNote] = useState<Note | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -19,65 +23,69 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
 
   useEffect(() => {
     Promise.all([
-      fetchProject(projectId),
-      fetchProjectTasks(projectId),
-      fetchQuestions({ project_id: projectId }),
-    ]).then(([p, t, q]) => {
-      setProject(p);
+      fetchNote(noteId),
+      fetchNoteTasks(noteId),
+      fetchNoteQuestions(noteId),
+    ]).then(([n, t, q]) => {
+      setNote(n);
       setTasks(t);
       setQuestions(q);
     });
-  }, [projectId]);
+  }, [noteId]);
 
   const handleBodyUpdate = (html: string) => {
-    if (!project) return;
+    if (!note) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      void updateProject(project.id, { body: html });
+      void updateNote(note.id, { body: html });
     }, 800);
   };
 
   const handleTitleSubmit = async () => {
-    if (!project || !titleRef.current) return;
+    if (!note || !titleRef.current) return;
     const newTitle = titleRef.current.value.trim();
-    if (newTitle && newTitle !== project.title) {
-      const updated = await updateProject(project.id, { title: newTitle });
-      setProject(updated);
+    if (newTitle && newTitle !== note.title) {
+      const updated = await updateNote(note.id, { title: newTitle });
+      setNote(updated);
     }
     setEditingTitle(false);
   };
 
+  // --- Tasks ---
+
   const [newTaskTitle, setNewTaskTitle] = useState("");
 
   const handleAddTask = async () => {
-    if (!project || !newTaskTitle.trim()) return;
-    await createTask({ title: newTaskTitle.trim(), parent: project.id });
+    if (!note || !newTaskTitle.trim()) return;
+    await createTask({ title: newTaskTitle.trim(), note_id: note.id });
     setNewTaskTitle("");
-    setTasks(await fetchProjectTasks(project.id));
+    setTasks(await fetchNoteTasks(note.id));
   };
 
   const handleTaskDone = async (task: Task) => {
     await updateTask(task.id, { status: task.status === "done" ? "open" : "done" });
-    setTasks(await fetchProjectTasks(projectId));
+    setTasks(await fetchNoteTasks(noteId));
   };
 
   const handleTaskEdit = async (task: Task, title: string) => {
     await updateTask(task.id, { title });
-    setTasks(await fetchProjectTasks(projectId));
+    setTasks(await fetchNoteTasks(noteId));
   };
 
   const handleTaskDelete = async (task: Task) => {
     await deleteTask(task.id);
-    setTasks(await fetchProjectTasks(projectId));
+    setTasks(await fetchNoteTasks(noteId));
   };
+
+  // --- Questions ---
 
   const [questionMenu, setQuestionMenu] = useState<{ question: Question; position: { top: number; left: number } } | null>(null);
   const [inlineAnswer, setInlineAnswer] = useState<string>("");
 
   const handleNewQuestion = async (text: string): Promise<string> => {
-    if (!project) return "";
-    const q = await createQuestion({ question: text, project_id: project.id });
-    setQuestions(await fetchQuestions({ project_id: project.id }));
+    if (!note) return "";
+    const q = await createQuestion({ question: text, note_id: note.id });
+    setQuestions(await fetchNoteQuestions(note.id));
     return q.id;
   };
 
@@ -93,33 +101,33 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
   const handleInlineAnswer = async () => {
     if (!questionMenu || !inlineAnswer.trim()) return;
     await updateQuestion(questionMenu.question.id, { answer: inlineAnswer.trim(), status: "answered" });
-    setQuestions(await fetchQuestions({ project_id: projectId }));
+    setQuestions(await fetchNoteQuestions(noteId));
     closeMenu();
   };
 
   const handleInlineDelete = async () => {
     if (!questionMenu) return;
     await deleteQuestion(questionMenu.question.id);
-    setQuestions(await fetchQuestions({ project_id: projectId }));
+    setQuestions(await fetchNoteQuestions(noteId));
     closeMenu();
   };
 
   const handleAnswerQuestion = async (q: Question, answer: string) => {
     await updateQuestion(q.id, { answer, status: "answered" });
-    setQuestions(await fetchQuestions({ project_id: projectId }));
+    setQuestions(await fetchNoteQuestions(noteId));
   };
 
   const handleEditQuestion = async (q: Question, text: string) => {
     await updateQuestion(q.id, { question: text });
-    setQuestions(await fetchQuestions({ project_id: projectId }));
+    setQuestions(await fetchNoteQuestions(noteId));
   };
 
   const handleDeleteQuestion = async (q: Question) => {
     await deleteQuestion(q.id);
-    setQuestions(await fetchQuestions({ project_id: projectId }));
+    setQuestions(await fetchNoteQuestions(noteId));
   };
 
-  if (!project) return null;
+  if (!note) return null;
 
   const openTasks = tasks.filter(t => t.status === "open");
   const doneTasks = tasks.filter(t => t.status === "done");
@@ -128,16 +136,30 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
 
   return (
     <div className="w-full max-w-4xl mx-auto">
+      {/* Type + status */}
+      <div className="flex items-center gap-3 mb-2">
+        {note.note_type && (
+          <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-accent/10 text-accent-dim">
+            {note.note_type === "one_on_one" ? "1:1" : note.note_type}
+          </span>
+        )}
+        {note.parent && (
+          <button onClick={onBack} className="text-xs text-text-muted hover:text-text-secondary">
+            ← parent
+          </button>
+        )}
+      </div>
+
       {/* Title */}
       {editingTitle ? (
-        <input ref={titleRef} defaultValue={project.title} autoFocus
+        <input ref={titleRef} defaultValue={note.title} autoFocus
           className="w-full text-3xl font-bold bg-transparent border-none outline-none text-text tracking-tight mb-1"
           onBlur={() => void handleTitleSubmit()}
           onKeyDown={e => { if (e.key === "Enter") { void handleTitleSubmit(); e.preventDefault(); } }} />
       ) : (
         <h1 onClick={() => setEditingTitle(true)}
           className="text-3xl font-bold text-text tracking-tight mb-1 cursor-text">
-          {project.title}
+          {note.title}
         </h1>
       )}
 
@@ -145,11 +167,11 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
       <div className="mb-10">
         <div className="relative">
           <Editor
-            content={project.body}
+            content={note.body}
             onUpdate={handleBodyUpdate}
             onQuestion={handleNewQuestion}
             onQuestionAction={handleQuestionAction}
-            placeholder="Describe the goal, add notes, highlight open questions..."
+            placeholder="Start thinking..."
           />
 
           {/* Inline question context menu */}
@@ -186,7 +208,7 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
         </div>
       </div>
 
-      {/* Open Questions */}
+      {/* Questions */}
       {(openQuestions.length > 0 || answeredQuestions.length > 0) && (
         <div className="border-t border-border-subtle pt-6 mb-8">
           <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-4">Questions</h2>
@@ -202,7 +224,7 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
       )}
 
       {/* Tasks */}
-      <div className="border-t border-border-subtle pt-6">
+      <div className="border-t border-border-subtle pt-6 mb-8">
         <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">Tasks</h2>
 
         <div className="flex items-center gap-3 py-2 px-1">
@@ -228,6 +250,7 @@ export default function ProjectView({ projectId }: ProjectViewProps) {
           </div>
         )}
       </div>
+
     </div>
   );
 }

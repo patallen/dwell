@@ -17,14 +17,13 @@ interface WhereWasIProps {
 }
 
 export default function WhereWasI({ focus, onDismiss }: WhereWasIProps) {
-  const title = focus.task?.title || focus.project?.title;
-  const note = focus.context?.note;
+  const title = focus.task?.title || focus.note?.title;
+  const memo = focus.context?.memo;
   const pushedAt = focus.context?.pushed_at;
   const body = focus.task?.body;
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      // Dismiss on any keypress
       e.preventDefault();
       onDismiss();
     },
@@ -55,13 +54,13 @@ export default function WhereWasI({ focus, onDismiss }: WhereWasIProps) {
 
         <h3 className="text-base font-bold text-text tracking-tight">{title}</h3>
 
-        {note && (
+        {memo && (
           <p className="text-sm text-accent-dim mt-2 italic">
-            &ldquo;{note}&rdquo;
+            &ldquo;{memo}&rdquo;
           </p>
         )}
 
-        {!note && body && (
+        {!memo && body && (
           <p className="text-sm text-text-secondary mt-1.5 line-clamp-2 leading-relaxed">
             {body}
           </p>

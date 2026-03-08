@@ -6,37 +6,45 @@ from pathlib import Path
 
 import yaml
 
-from models import ContextEntry, Project, Question, Task
+from models import ContextEntry, Note, Question, Task
 
 
 class FileStore:
     def __init__(self, root: str):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.notes: dict[str, Note] = {}
         self.tasks: dict[str, Task] = {}
-        self.projects: dict[str, Project] = {}
         self.questions: dict[str, Question] = {}
         self.context_stack: list[ContextEntry] = []
         self._index()
         self._load_context()
         self._load_questions()
 
+    # --- Indexing / Parsing ---
+
     def _index(self):
-        """Walk the vault and parse all files into memory."""
+        """Walk the vault and parse all .md files into memory."""
+        self.notes.clear()
         self.tasks.clear()
-        self.projects.clear()
-        for path in self.root.rglob("*.md"):
-            meta, body = self._parse_frontmatter(path)
-            if meta is None:
+        notes_dir = self.root / "notes"
+        tasks_dir = self.root / "tasks"
+        for d in [notes_dir, tasks_dir]:
+            if not d.exists():
                 continue
-            if meta.get("type") == "project":
-                project = self._meta_to_project(meta, body, path)
-                if project:
-                    self.projects[project.id] = project
-            else:
-                task = self._meta_to_task(meta, body, path)
-                if task:
-                    self.tasks[task.id] = task
+            for path in d.rglob("*.md"):
+                meta, body = self._parse_frontmatter(path)
+                if meta is None:
+                    continue
+                entity_type = meta.get("entity")
+                if entity_type == "task":
+                    task = self._meta_to_task(meta, body, path)
+                    if task:
+                        self.tasks[task.id] = task
+                else:
+                    note = self._meta_to_note(meta, body, path)
+                    if note:
+                        self.notes[note.id] = note
 
     def _parse_datetime(self, meta: dict, key: str) -> datetime | None:
         val = meta.get(key)
@@ -65,8 +73,28 @@ class FileStore:
             return None, ""
         return meta, parts[1].strip()
 
+    def _meta_to_note(self, meta: dict, body: str, path: Path) -> Note | None:
+        note_id = meta.get("id")
+        if not note_id:
+            return None
+        return Note(
+            id=note_id,
+            title=meta.get("title", ""),
+            body=body,
+            note_type=meta.get("note_type"),
+            status=meta.get("status", "active"),
+            parent=meta.get("parent"),
+            deadline=self._parse_datetime(meta, "deadline"),
+            created_at=self._parse_datetime(meta, "created") or datetime.now(),
+            updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
+            last_viewed=self._parse_datetime(meta, "last_viewed"),
+            file_path=str(path),
+        )
+
     def _meta_to_task(self, meta: dict, body: str, path: Path) -> Task | None:
-        task_id = meta.get("id", str(path.relative_to(self.root)).removesuffix(".md"))
+        task_id = meta.get("id")
+        if not task_id:
+            return None
         return Task(
             id=task_id,
             title=meta.get("title", ""),
@@ -74,7 +102,7 @@ class FileStore:
             status=meta.get("status", "open"),
             loe=meta.get("loe"),
             deadline=self._parse_datetime(meta, "deadline"),
-            parent=meta.get("parent"),
+            note_id=meta.get("note_id"),
             created_at=self._parse_datetime(meta, "created") or datetime.now(),
             updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
             last_viewed=self._parse_datetime(meta, "last_viewed"),
@@ -82,44 +110,128 @@ class FileStore:
             file_path=str(path),
         )
 
-    def _meta_to_project(self, meta: dict, body: str, path: Path) -> Project | None:
-        proj_id = meta.get("id", str(path.relative_to(self.root)).removesuffix(".md"))
-        return Project(
-            id=proj_id,
-            title=meta.get("title", ""),
-            body=body,
-            status=meta.get("status", "active"),
-            deadline=self._parse_datetime(meta, "deadline"),
-            created_at=self._parse_datetime(meta, "created") or datetime.now(),
-            updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
-            file_path=str(path),
-        )
+    # --- Notes ---
 
-    def create(self, task: Task) -> Task:
+    def create_note(self, note: Note) -> Note:
+        if not note.id:
+            note.id = uuid.uuid4().hex[:8]
+        note.created_at = datetime.now()
+        note.updated_at = datetime.now()
+        if not note.file_path:
+            notes_dir = self.root / "notes"
+            notes_dir.mkdir(exist_ok=True)
+            note.file_path = str(notes_dir / f"{note.id}.md")
+        self._write_note_file(note)
+        self.notes[note.id] = note
+        return note
+
+    def get_note(self, note_id: str, track_view: bool = False) -> Note | None:
+        note = self.notes.get(note_id)
+        if note and track_view:
+            note.last_viewed = datetime.now()
+            self._write_note_file(note)
+        return note
+
+    def update_note(self, note: Note) -> Note:
+        note.updated_at = datetime.now()
+        self._write_note_file(note)
+        self.notes[note.id] = note
+        return note
+
+    def delete_note(self, note_id: str) -> bool:
+        note = self.notes.get(note_id)
+        if not note:
+            return False
+        try:
+            os.remove(note.file_path)
+        except FileNotFoundError:
+            pass
+        del self.notes[note_id]
+        return True
+
+    def query_notes(
+        self,
+        note_type: str | None = None,
+        status: str | None = None,
+        parent: str | None = None,
+        search: str | None = None,
+    ) -> list[Note]:
+        results = []
+        for n in self.notes.values():
+            if note_type and n.note_type != note_type:
+                continue
+            if status and n.status != status:
+                continue
+            if parent is not None and n.parent != parent:
+                continue
+            if search:
+                q = search.lower()
+                if q not in n.title.lower() and q not in n.body.lower():
+                    continue
+            results.append(n)
+        return results
+
+    def note_children(self, note_id: str) -> list[Note]:
+        return [n for n in self.notes.values() if n.parent == note_id]
+
+    def note_tasks(self, note_id: str) -> list[Task]:
+        return [t for t in self.tasks.values() if t.note_id == note_id]
+
+    def note_questions(self, note_id: str) -> list[Question]:
+        return [q for q in self.questions.values() if q.note_id == note_id]
+
+    def _write_note_file(self, note: Note):
+        path = Path(note.file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        meta: dict = {
+            "entity": "note",
+            "id": note.id,
+            "title": note.title,
+            "status": note.status,
+            "created": note.created_at.isoformat(),
+            "updated": note.updated_at.isoformat(),
+        }
+        if note.note_type:
+            meta["note_type"] = note.note_type
+        if note.parent:
+            meta["parent"] = note.parent
+        if note.deadline:
+            meta["deadline"] = note.deadline.isoformat()
+        if note.last_viewed:
+            meta["last_viewed"] = note.last_viewed.isoformat()
+        frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
+        content = f"---\n{frontmatter}---\n\n{note.body}\n"
+        path.write_text(content)
+
+    # --- Tasks ---
+
+    def create_task(self, task: Task) -> Task:
         if not task.id:
             task.id = uuid.uuid4().hex[:8]
         task.created_at = datetime.now()
         task.updated_at = datetime.now()
         if not task.file_path:
-            task.file_path = str(self.root / f"{task.id}.md")
-        self._write_file(task)
+            tasks_dir = self.root / "tasks"
+            tasks_dir.mkdir(exist_ok=True)
+            task.file_path = str(tasks_dir / f"{task.id}.md")
+        self._write_task_file(task)
         self.tasks[task.id] = task
         return task
 
-    def get(self, task_id: str, track_view: bool = False) -> Task | None:
+    def get_task(self, task_id: str, track_view: bool = False) -> Task | None:
         task = self.tasks.get(task_id)
         if task and track_view:
             task.last_viewed = datetime.now()
-            self._write_file(task)
+            self._write_task_file(task)
         return task
 
-    def update(self, task: Task) -> Task:
+    def update_task(self, task: Task) -> Task:
         task.updated_at = datetime.now()
-        self._write_file(task)
+        self._write_task_file(task)
         self.tasks[task.id] = task
         return task
 
-    def delete(self, task_id: str) -> bool:
+    def delete_task(self, task_id: str) -> bool:
         task = self.tasks.get(task_id)
         if not task:
             return False
@@ -130,10 +242,11 @@ class FileStore:
         del self.tasks[task_id]
         return True
 
-    def query(
+    def query_tasks(
         self,
         status: str | None = None,
         loe: str | None = None,
+        note_id: str | None = None,
         search: str | None = None,
     ) -> list[Task]:
         results = []
@@ -142,6 +255,8 @@ class FileStore:
                 continue
             if loe and t.loe != loe:
                 continue
+            if note_id is not None and t.note_id != note_id:
+                continue
             if search:
                 q = search.lower()
                 if q not in t.title.lower() and q not in t.body.lower():
@@ -149,212 +264,192 @@ class FileStore:
             results.append(t)
         return results
 
-    def focus(self) -> list[Task]:
-        """Return open tasks ranked for the focus view."""
-        open_tasks = [t for t in self.tasks.values() if t.status == "open"]
-        open_tasks.sort(key=lambda t: self._score(t), reverse=True)
-        return open_tasks
+    def _write_task_file(self, task: Task):
+        path = Path(task.file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        meta: dict = {
+            "entity": "task",
+            "id": task.id,
+            "title": task.title,
+            "status": task.status,
+            "created": task.created_at.isoformat(),
+            "updated": task.updated_at.isoformat(),
+        }
+        if task.loe:
+            meta["loe"] = task.loe
+        if task.deadline:
+            meta["deadline"] = task.deadline.isoformat()
+        if task.note_id:
+            meta["note_id"] = task.note_id
+        if task.last_viewed:
+            meta["last_viewed"] = task.last_viewed.isoformat()
+        if task.completed_at:
+            meta["completed_at"] = task.completed_at.isoformat()
+        frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
+        content = f"---\n{frontmatter}---\n\n{task.body}\n"
+        path.write_text(content)
+
+    # --- Suggestion Engine ---
+
+    def _deadline_score(self, deadline: datetime | None, energy: str | None = None) -> float:
+        if not deadline:
+            return 0.0
+        now = datetime.now()
+        hours_until = (deadline - now).total_seconds() / 3600
+        s = 0.0
+        if hours_until < 0:
+            s = 100
+        elif hours_until < 24:
+            s = 50
+        elif hours_until < 72:
+            s = 30
+        elif hours_until < 168:
+            s = 15
+        if energy == "rough":
+            if hours_until < 0:
+                s -= 80
+            elif hours_until < 24:
+                s -= 40
+        elif energy == "calm":
+            if hours_until < 0:
+                s += 20
+            elif hours_until < 24:
+                s += 10
+        return s
+
+    def _deadline_reason(self, deadline: datetime | None) -> str | None:
+        if not deadline:
+            return None
+        hours_until = (deadline - datetime.now()).total_seconds() / 3600
+        if hours_until < 0:
+            return "overdue"
+        if hours_until < 24:
+            return "due today"
+        if hours_until < 48:
+            return "due tomorrow"
+        if hours_until < 168:
+            return "due this week"
+        return None
 
     def _time_of_day_boost(self, task: Task) -> float:
-        """Boost tasks whose loe matches historically productive time windows."""
-        # Collect all completed tasks
         completed = [t for t in self.tasks.values() if t.completed_at]
         if len(completed) < 10:
-            return 0.0  # not enough data
-
-        # Current 4-hour window (0-3, 4-7, 8-11, 12-15, 16-19, 20-23)
+            return 0.0
         current_window = datetime.now().hour // 4
-
-        # Count completions per loe in the current window
         window_counts: dict[str | None, int] = {}
         total_in_window = 0
         for t in completed:
             if t.completed_at.hour // 4 == current_window:
                 window_counts[t.loe] = window_counts.get(t.loe, 0) + 1
                 total_in_window += 1
-
         if total_in_window < 3:
-            return 0.0  # not enough data for this window
-
-        # Count total completions per loe (across all windows)
+            return 0.0
         total_counts: dict[str | None, int] = {}
         for t in completed:
             total_counts[t.loe] = total_counts.get(t.loe, 0) + 1
-
-        # If this task's loe is over-represented in the current window
-        # relative to its overall share, give it a boost
         task_loe = task.loe
         window_share = window_counts.get(task_loe, 0) / total_in_window
         overall_share = total_counts.get(task_loe, 0) / len(completed)
-
         if overall_share > 0 and window_share > overall_share:
-            # Proportional boost, capped at 15
             return min(15.0, (window_share / overall_share - 1) * 10)
-
         return 0.0
 
-    def _score(self, task: Task, energy: str | None = None) -> float:
-        now = datetime.now()
-        s = 0.0
-
-        if task.deadline:
-            hours_until = (task.deadline - now).total_seconds() / 3600
-            if hours_until < 0:
-                s += 100
-            elif hours_until < 24:
-                s += 50
-            elif hours_until < 72:
-                s += 30
-            elif hours_until < 168:
-                s += 15
-
+    def _score_task(self, task: Task, energy: str | None = None) -> float:
+        s = self._deadline_score(task.deadline, energy)
         if task.loe == "hot":
             s += 20
         elif task.loe == "warm":
             s += 10
-
-        # Time-of-day awareness — quiet boost based on completion history
         s += self._time_of_day_boost(task)
-
         if energy == "rough":
-            # Suppress deadline pressure — don't pile on when the wall is high
-            if task.deadline:
-                hours_until = (task.deadline - now).total_seconds() / 3600
-                if hours_until < 0:
-                    s -= 80  # reduce overdue from 100 to 20
-                elif hours_until < 24:
-                    s -= 40  # reduce due-today from 50 to 10
-            # Boost quick wins
             if task.loe == "hot":
                 s += 15
-            # Boost standalone tasks (no project = lower stakes)
-            if not task.parent:
+            if not task.note_id:
                 s += 10
-            # Boost novel/recent tasks (created in last 48h)
-            age_hours = (now - task.created_at).total_seconds() / 3600
+            age_hours = (datetime.now() - task.created_at).total_seconds() / 3600
             if age_hours < 48:
                 s += 15
         elif energy == "calm":
-            # Lean into deadline tasks — you can handle them today
-            if task.deadline:
-                hours_until = (task.deadline - now).total_seconds() / 3600
-                if hours_until < 0:
-                    s += 20  # extra push on overdue
-                elif hours_until < 24:
-                    s += 10
-            # Boost warm/cool (bigger) tasks
             if task.loe == "warm":
                 s += 10
             elif task.loe == "cool":
                 s += 5
-
         return s
 
-    def _score_reason(self, task: Task, energy: str | None = None) -> str:
-        """Human-readable reason why this task was suggested."""
-        now = datetime.now()
+    def _score_task_reason(self, task: Task, energy: str | None = None) -> str:
         reasons = []
-
-        if task.deadline:
-            hours_until = (task.deadline - now).total_seconds() / 3600
-            if hours_until < 0:
-                reasons.append("overdue")
-            elif hours_until < 24:
-                reasons.append("due today")
-            elif hours_until < 48:
-                reasons.append("due tomorrow")
-            elif hours_until < 168:
-                reasons.append("due this week")
-
+        dr = self._deadline_reason(task.deadline)
+        if dr:
+            reasons.append(dr)
         if task.loe == "hot":
             reasons.append("quick win")
-
         if energy == "rough":
-            age_hours = (now - task.created_at).total_seconds() / 3600
+            age_hours = (datetime.now() - task.created_at).total_seconds() / 3600
             if age_hours < 48:
                 reasons.append("fresh")
-            if not task.parent:
+            if not task.note_id:
                 reasons.append("low-stakes")
-
         return " · ".join(reasons) if reasons else "highest priority"
 
+    def _score_note(self, note: Note, energy: str | None = None) -> float:
+        s = self._deadline_score(note.deadline, energy)
+        # Open questions are the urgency signal for notes
+        open_qs = len([q for q in self.questions.values() if q.note_id == note.id and q.status == "open"])
+        if open_qs > 0:
+            s += min(40, open_qs * 15)  # up to 40 pts for open questions
+        # Open tasks inside the note give it some weight too
+        open_tasks = len([t for t in self.tasks.values() if t.note_id == note.id and t.status == "open"])
+        if open_tasks > 0:
+            s += min(20, open_tasks * 5)
+        if energy == "rough":
+            # Suppress notes with lots of open questions — that's overwhelming
+            if open_qs > 3:
+                s -= 30
+            # Boost fresh notes
+            age_hours = (datetime.now() - note.created_at).total_seconds() / 3600
+            if age_hours < 48:
+                s += 15
+        return s
+
+    def _score_note_reason(self, note: Note) -> str:
+        reasons = []
+        dr = self._deadline_reason(note.deadline)
+        if dr:
+            reasons.append(dr)
+        open_qs = len([q for q in self.questions.values() if q.note_id == note.id and q.status == "open"])
+        if open_qs > 0:
+            reasons.append(f"{open_qs} open question{'s' if open_qs > 1 else ''}")
+        return " · ".join(reasons) if reasons else "needs attention"
+
     def suggest(self, skip_ids: list[str] | None = None, limit: int = 5, energy: str | None = None) -> list[dict]:
-        """Return top task suggestions with reasoning."""
-        open_tasks = [t for t in self.tasks.values() if t.status == "open"]
-        if skip_ids:
-            open_tasks = [t for t in open_tasks if t.id not in skip_ids]
-        open_tasks.sort(key=lambda t: self._score(t, energy), reverse=True)
-        return [
-            {"task": t, "reason": self._score_reason(t, energy)}
-            for t in open_tasks[:limit]
-        ]
+        skip = set(skip_ids or [])
+        items: list[tuple[float, dict]] = []
 
-    # --- Projects ---
-
-    def create_project(self, project: Project) -> Project:
-        if not project.id:
-            project.id = uuid.uuid4().hex[:8]
-        project.created_at = datetime.now()
-        project.updated_at = datetime.now()
-        if not project.file_path:
-            projects_dir = self.root / "projects"
-            projects_dir.mkdir(exist_ok=True)
-            project.file_path = str(projects_dir / f"{project.id}.md")
-        self._write_project_file(project)
-        self.projects[project.id] = project
-        return project
-
-    def get_project(self, project_id: str) -> Project | None:
-        return self.projects.get(project_id)
-
-    def update_project(self, project: Project) -> Project:
-        project.updated_at = datetime.now()
-        self._write_project_file(project)
-        self.projects[project.id] = project
-        return project
-
-    def delete_project(self, project_id: str) -> bool:
-        project = self.projects.get(project_id)
-        if not project:
-            return False
-        try:
-            os.remove(project.file_path)
-        except FileNotFoundError:
-            pass
-        del self.projects[project_id]
-        return True
-
-    def query_projects(self, status: str | None = None, search: str | None = None) -> list[Project]:
-        results = []
-        for p in self.projects.values():
-            if status and p.status != status:
+        # Score open tasks
+        for t in self.tasks.values():
+            if t.status != "open" or t.id in skip:
                 continue
-            if search:
-                q = search.lower()
-                if q not in p.title.lower() and q not in p.body.lower():
-                    continue
-            results.append(p)
-        return results
+            score = self._score_task(t, energy)
+            items.append((score, {
+                "type": "task",
+                "task": t,
+                "reason": self._score_task_reason(t, energy),
+            }))
 
-    def project_tasks(self, project_id: str) -> list[Task]:
-        return [t for t in self.tasks.values() if t.parent == project_id]
+        # Score active notes
+        for n in self.notes.values():
+            if n.status not in ("active", "paused") or n.id in skip:
+                continue
+            score = self._score_note(n, energy)
+            if score > 0:  # only surface notes that have some signal
+                items.append((score, {
+                    "type": "note",
+                    "note": n,
+                    "reason": self._score_note_reason(n),
+                }))
 
-    def _write_project_file(self, project: Project):
-        path = Path(project.file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        meta: dict = {
-            "type": "project",
-            "id": project.id,
-            "title": project.title,
-            "status": project.status,
-            "created": project.created_at.isoformat(),
-            "updated": project.updated_at.isoformat(),
-        }
-        if project.deadline:
-            meta["deadline"] = project.deadline.isoformat()
-        frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
-        content = f"---\n{frontmatter}---\n\n{project.body}\n"
-        path.write_text(content)
+        items.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in items[:limit]]
 
     # --- Questions ---
 
@@ -371,7 +466,8 @@ class FileStore:
             self.questions = {
                 q["id"]: Question(
                     id=q["id"], question=q["question"], answer=q.get("answer", ""),
-                    status=q.get("status", "open"), project_id=q.get("project_id"),
+                    notes=q.get("notes", ""),
+                    status=q.get("status", "open"), note_id=q.get("note_id"),
                     created_at=datetime.fromisoformat(q["created_at"]),
                     updated_at=datetime.fromisoformat(q["updated_at"]),
                 ) for q in data
@@ -382,7 +478,7 @@ class FileStore:
     def _save_questions(self):
         data = [{
             "id": q.id, "question": q.question, "answer": q.answer,
-            "status": q.status, "project_id": q.project_id,
+            "notes": q.notes, "status": q.status, "note_id": q.note_id,
             "created_at": q.created_at.isoformat(), "updated_at": q.updated_at.isoformat(),
         } for q in self.questions.values()]
         self._questions_path().write_text(json.dumps(data, indent=2))
@@ -412,9 +508,6 @@ class FileStore:
         self._save_questions()
         return True
 
-    def project_questions(self, project_id: str) -> list[Question]:
-        return [q for q in self.questions.values() if q.project_id == project_id]
-
     # --- Context Stack ---
 
     def _context_path(self) -> Path:
@@ -432,7 +525,7 @@ class FileStore:
                     type=e["type"],
                     ref_id=e["ref_id"],
                     reason=e.get("reason", ""),
-                    note=e.get("note"),
+                    memo=e.get("memo"),
                     pushed_at=datetime.fromisoformat(e["pushed_at"]),
                 )
                 for e in data
@@ -446,7 +539,7 @@ class FileStore:
                 "type": e.type,
                 "ref_id": e.ref_id,
                 "reason": e.reason,
-                "note": e.note,
+                "memo": e.memo,
                 "pushed_at": e.pushed_at.isoformat(),
             }
             for e in self.context_stack
@@ -454,10 +547,9 @@ class FileStore:
         self._context_path().write_text(json.dumps(data, indent=2))
 
     def context_push(self, entry: ContextEntry) -> list[ContextEntry]:
-        # If re-pushing an existing entry, preserve its note
         for e in self.context_stack:
-            if e.ref_id == entry.ref_id and e.note and not entry.note:
-                entry.note = e.note
+            if e.ref_id == entry.ref_id and e.memo and not entry.memo:
+                entry.memo = e.memo
                 break
         self.context_stack = [e for e in self.context_stack if e.ref_id != entry.ref_id]
         self.context_stack.insert(0, entry)
@@ -471,11 +563,10 @@ class FileStore:
         self._save_context()
         return entry
 
-    def context_set_note(self, note: str) -> bool:
-        """Set a note on the current top-of-stack entry."""
+    def context_set_memo(self, memo: str) -> bool:
         if not self.context_stack:
             return False
-        self.context_stack[0].note = note or None
+        self.context_stack[0].memo = memo or None
         self._save_context()
         return True
 
@@ -492,29 +583,3 @@ class FileStore:
             self._save_context()
             return True
         return False
-
-    def _write_file(self, task: Task):
-        path = Path(task.file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        meta: dict = {
-            "id": task.id,
-            "title": task.title,
-            "status": task.status,
-            "created": task.created_at.isoformat(),
-            "updated": task.updated_at.isoformat(),
-        }
-        if task.loe:
-            meta["loe"] = task.loe
-        if task.deadline:
-            meta["deadline"] = task.deadline.isoformat()
-        if task.parent:
-            meta["parent"] = task.parent
-        if task.last_viewed:
-            meta["last_viewed"] = task.last_viewed.isoformat()
-        if task.completed_at:
-            meta["completed_at"] = task.completed_at.isoformat()
-
-        frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
-        content = f"---\n{frontmatter}---\n\n{task.body}\n"
-        path.write_text(content)
