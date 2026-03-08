@@ -11,6 +11,7 @@ import {
   updateTask,
   pushContext,
   popContext,
+  removeContext,
 } from "./api";
 import type { ContextEntry } from "./api";
 import ProjectView from "./components/ProjectView";
@@ -28,8 +29,7 @@ function ProjectRoute() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
 
-  const handleBack = async () => {
-    await popContext();
+  const handleBack = () => {
     navigate("/");
   };
 
@@ -53,12 +53,7 @@ function App() {
 
   const applyFocus = useCallback((state: FocusState) => {
     setFocus(state);
-    if (state.state === "focused" && state.context?.type === "project" && state.project) {
-      if (!location.pathname.startsWith(`/project/${state.project.id}`)) {
-        navigate(`/project/${state.project.id}`, { replace: true });
-      }
-    }
-  }, [navigate, location.pathname]);
+  }, []);
 
   const refresh = useCallback(async () => {
     applyFocus(await fetchFocus());
@@ -66,7 +61,7 @@ function App() {
 
   useEffect(() => {
     fetchFocus().then(applyFocus);
-  }, [applyFocus]);
+  }, [applyFocus, location.pathname]);
 
   const handlePick = async (task: Task, reason: string) => {
     await pushContext(task.id, "task", reason);
@@ -135,19 +130,15 @@ function App() {
     setProjectList(await fetchProjects({ status: "active" }));
   };
 
-  const handleOpenProject = async (project: Project) => {
+  const handleOpenProject = (project: Project) => {
     setOverlay(null);
-    await pushContext(project.id, "project", "opened");
     navigate(`/project/${project.id}`);
-    await refresh();
   };
 
   const handleCreateProject = async () => {
     const project = await createProject({ title: "New project" });
     setOverlay(null);
-    await pushContext(project.id, "project", "created");
     navigate(`/project/${project.id}`);
-    await refresh();
   };
 
   useEffect(() => {
@@ -181,12 +172,29 @@ function App() {
   const suggestions = focus?.suggestions || [];
 
   return (
-    <div className="min-h-dvh flex flex-col bg-background font-sans text-text antialiased">
+    <div className="h-dvh flex flex-col bg-background font-sans text-text antialiased">
       {/* Header */}
-      <header className="px-6 py-4 border-b border-border-subtle shrink-0 sm:px-10 flex items-center justify-between">
+      <header className="sticky top-0 z-40 px-6 py-4 border-b border-border-subtle shrink-0 sm:px-10 flex items-center gap-4 bg-background/80 backdrop-blur-md">
         <span className="text-sm font-bold tracking-tight text-accent cursor-pointer" onClick={() => navigate("/")}>adhdeez</span>
+        {focus?.state === "focused" && (
+          <div
+            className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer group"
+            onClick={() => {
+              if (focus.context?.type === "project" && focus.project) {
+                navigate(`/project/${focus.project.id}`);
+              } else {
+                navigate("/");
+              }
+            }}
+          >
+            <span className="text-text-muted text-xs shrink-0">→</span>
+            <span className="text-xs text-text-secondary truncate group-hover:text-text transition-colors">
+              {focus.task?.title || focus.project?.title}
+            </span>
+          </div>
+        )}
         {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (
-          <span className="text-xs text-text-muted">{focus.stack_depth - 1} paused</span>
+          <span className="text-xs text-text-muted shrink-0">{focus.stack_depth - 1} paused</span>
         )}
       </header>
 
@@ -227,16 +235,26 @@ function App() {
                 <ul className="flex-1 overflow-y-auto mb-2">
                   {stackItems.map((entry, i) => (
                     <li key={entry.ref_id}
-                      className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm text-text">
+                      className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm text-text group">
                       {i === 0 && <span className="size-1.5 rounded-full bg-accent shrink-0" />}
                       {i > 0 && <span className="size-1.5 rounded-full bg-text-muted/40 shrink-0" />}
-                      <span className={i === 0 ? "font-medium" : "text-text-secondary"}>{entry.task?.title || entry.ref_id}</span>
+                      <span className={i === 0 ? "font-medium" : "text-text-secondary"}>
+                        {entry.task?.title || entry.project?.title || entry.ref_id}
+                      </span>
                       {entry.reason && <span className="ml-auto text-xs text-text-muted shrink-0">{entry.reason}</span>}
+                      <button
+                        onClick={async () => {
+                          await removeContext(entry.ref_id);
+                          await refresh();
+                          setStackItems(await fetchContext());
+                        }}
+                        className="text-[10px] text-text-muted hover:text-urgent px-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                      >×</button>
                     </li>
                   ))}
                 </ul>
               ) : <p className="text-sm text-text-muted mb-2">stack is empty</p>}
-              <span className="text-xs text-text-muted pt-2.5 border-t border-border">top = current focus · esc to close</span>
+              <span className="text-xs text-text-muted pt-2.5 border-t border-border">hover to remove · esc to close</span>
             </>}
             {overlay === "projects" && <>
               <div className="flex items-center justify-between mb-3.5">
@@ -283,7 +301,7 @@ function App() {
       )}
 
       {/* Main */}
-      <main className={`flex-1 flex ${isProjectView ? "items-start" : "items-center"} justify-center p-6 sm:p-10 overflow-y-auto`}>
+      <main className={`flex-1 flex ${isProjectView ? "items-start" : focus?.state === "empty" ? "items-center" : "items-start"} justify-center p-6 sm:p-10 overflow-y-auto`}>
         <Routes>
           <Route path="/project/:projectId" element={<ProjectRoute />} />
           <Route path="*" element={
@@ -299,76 +317,90 @@ function App() {
                 </div>
               )}
 
-              {/* Suggesting */}
-              {focus?.state === "suggesting" && suggestions.length > 0 && (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-12">
-                  <h1 className="text-5xl sm:text-6xl font-semibold text-text-secondary text-center tracking-tight leading-none px-6">
-                    What should we work on?
-                  </h1>
-
-                  <div className="w-full max-w-lg flex flex-col gap-2">
-                    {suggestions.map(({ task: t, reason }) => (
-                      <button
-                        key={t.id}
-                        onClick={() => void handlePick(t, reason)}
-                        className="w-full text-left rounded-2xl border border-border bg-surface p-5 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
+              {/* Focused + suggestions */}
+              {(focus?.state === "focused" || focus?.state === "suggesting") && (
+                <div className="w-full max-w-xl flex flex-col gap-6">
+                  {/* Current focus */}
+                  {focus.state === "focused" && (task || focus.project) && (
+                    <div>
+                      <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">Working on</p>
+                      <div
+                        className={`relative rounded-2xl border border-accent/30 bg-surface p-5 sm:p-6 shadow-lg shadow-accent/5 ${focus.project ? "cursor-pointer hover:border-accent/50 transition-colors" : ""}`}
+                        onClick={() => {
+                          if (focus.project) {
+                            navigate(`/project/${focus.project.id}`);
+                          }
+                        }}
                       >
-                        <div className="flex items-center gap-3">
-                          <div className={`size-2 rounded-full shrink-0 ${loeDot(t.loe)}`} />
-                          <span className="text-lg font-semibold text-text group-hover:text-text tracking-tight">
-                            {t.title}
-                          </span>
-                          {reason && (
-                            <span className="ml-auto text-xs text-accent-dim shrink-0">{reason}</span>
+                        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-accent rounded-r-full" />
+                        <div className="flex items-center gap-2.5 mb-3">
+                          {task && <div className={`size-2 rounded-full ${loeDot(task.loe)}`} />}
+                          {focus.context?.reason && (
+                            <span className="text-xs text-accent-dim tracking-wide">{focus.context.reason}</span>
                           )}
                         </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+                        <h1 className="text-xl font-bold leading-snug tracking-tight text-text">
+                          {task?.title || focus.project?.title}
+                        </h1>
+                        {task?.body && (
+                          <p className="text-text-secondary text-sm mt-1.5 leading-relaxed">{task.body}</p>
+                        )}
 
-              {/* Focused */}
-              {focus?.state === "focused" && task && (
-                <div className="w-full max-w-xl">
-                  <p className="text-text-muted text-sm mb-6 text-center">Working on</p>
-
-                  <div className="relative rounded-2xl border border-accent/30 bg-surface p-6 sm:p-8 shadow-lg shadow-accent/5">
-                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-10 bg-accent rounded-r-full" />
-                    <div className="flex items-center gap-2.5 mb-4">
-                      <div className={`size-2 rounded-full ${loeDot(task.loe)}`} />
-                      {focus.context?.reason && (
-                        <span className="text-xs text-accent-dim tracking-wide">{focus.context.reason}</span>
-                      )}
+                        <div className="flex gap-3 mt-4 pt-4 border-t border-border-subtle">
+                          {task && (
+                            <button
+                              onClick={e => { e.stopPropagation(); void handleDone(); }}
+                              className="h-9 px-5 rounded-xl bg-success/15 text-success text-sm font-semibold hover:bg-success/25 active:scale-[0.98] transition-all"
+                            >
+                              Done
+                            </button>
+                          )}
+                          <button
+                            onClick={e => { e.stopPropagation(); void handlePause(); }}
+                            className="h-9 px-5 rounded-xl text-text-muted text-sm hover:text-text-secondary hover:bg-surface-raised transition-colors"
+                          >
+                            Pause
+                          </button>
+                          {task && (
+                            <button
+                              onClick={e => { e.stopPropagation(); void handleDrop(); }}
+                              className="h-9 px-5 rounded-xl text-text-muted text-sm hover:text-urgent hover:bg-urgent/10 transition-colors"
+                            >
+                              Drop
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <h1 className="text-2xl font-bold leading-snug tracking-tight text-text">
-                      {task.title}
-                    </h1>
-                    {task.body && (
-                      <p className="text-text-secondary text-sm mt-2 leading-relaxed">{task.body}</p>
-                    )}
+                  )}
 
-                    <div className="flex gap-3 mt-6 pt-5 border-t border-border-subtle">
-                      <button
-                        onClick={() => void handleDone()}
-                        className="h-10 px-6 rounded-xl bg-success/15 text-success text-sm font-semibold hover:bg-success/25 active:scale-[0.98] transition-all"
-                      >
-                        Done
-                      </button>
-                      <button
-                        onClick={() => void handlePause()}
-                        className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-text-secondary hover:bg-surface-raised transition-colors"
-                      >
-                        Pause
-                      </button>
-                      <button
-                        onClick={() => void handleDrop()}
-                        className="h-10 px-6 rounded-xl text-text-muted text-sm hover:text-urgent hover:bg-urgent/10 transition-colors"
-                      >
-                        Drop
-                      </button>
+                  {/* Suggestions */}
+                  {suggestions.length > 0 && (
+                    <div>
+                      <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">
+                        {focus.state === "focused" ? "Up next" : "What should we work on?"}
+                      </p>
+                      <div className="flex flex-col gap-2">
+                        {suggestions.map(({ task: t, reason }) => (
+                          <button
+                            key={t.id}
+                            onClick={() => void handlePick(t, reason)}
+                            className="w-full text-left rounded-2xl border border-border bg-surface p-4 hover:border-accent/30 hover:shadow-lg hover:shadow-accent/5 active:scale-[0.99] transition-all group"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className={`size-2 rounded-full shrink-0 ${loeDot(t.loe)}`} />
+                              <span className="text-sm font-semibold text-text group-hover:text-text tracking-tight">
+                                {t.title}
+                              </span>
+                              {reason && (
+                                <span className="ml-auto text-xs text-accent-dim shrink-0">{reason}</span>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
             </>
@@ -377,7 +409,7 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer className="px-6 py-3 border-t border-border-subtle flex flex-wrap gap-5 text-xs text-text-muted shrink-0 sm:px-10">
+      <footer className="sticky bottom-0 z-40 px-6 py-3 border-t border-border-subtle flex flex-wrap gap-5 text-xs text-text-muted shrink-0 sm:px-10 bg-background/80 backdrop-blur-md">
         <span>⌘I capture</span>
         <span>⌘/ find</span>
         <span>⌘J stack</span>

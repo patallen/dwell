@@ -49,7 +49,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     },
     editorProps: {
       attributes: {
-        class: "tiptap outline-none min-h-[200px]",
+        class: "tiptap outline-none min-h-[400px]",
       },
       handleClick: (view, pos) => {
         if (!onQuestionAction) return false;

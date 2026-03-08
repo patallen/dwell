@@ -92,6 +92,7 @@ def get_focus():
             if not project:
                 store.context_pop()
                 return get_focus()
+        suggestions = store.suggest()
         return {
             "state": "focused",
             "context": {
@@ -103,6 +104,10 @@ def get_focus():
             "task": asdict(task) if task else None,
             "project": asdict(project) if project else None,
             "stack_depth": len(store.context_stack),
+            "suggestions": [
+                {"task": asdict(s["task"]), "reason": s["reason"]}
+                for s in suggestions
+            ],
         }
 
     # No current focus — suggest options
@@ -136,6 +141,9 @@ def get_context():
         if entry.type == "task":
             task = store.get(entry.ref_id)
             item["task"] = asdict(task) if task else None
+        elif entry.type == "project":
+            project = store.get_project(entry.ref_id)
+            item["project"] = asdict(project) if project else None
         result.append(item)
     return result
 
@@ -155,6 +163,12 @@ def push_context(req: ContextPushRequest):
 @app.post("/context/pop")
 def pop_context():
     store.context_pop()
+    return get_focus()
+
+
+@app.delete("/context/{ref_id}")
+def remove_context(ref_id: str):
+    store.context_remove(ref_id)
     return get_focus()
 
 

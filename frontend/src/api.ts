@@ -19,6 +19,7 @@ export interface ContextEntry {
   reason: string;
   pushed_at: string;
   task?: Task | null;
+  project?: Project | null;
 }
 
 export interface Suggestion {
@@ -76,6 +77,11 @@ export async function popContext(): Promise<FocusState> {
 
 export async function fetchContext(): Promise<ContextEntry[]> {
   const res = await fetch(`${API}/context`);
+  return res.json();
+}
+
+export async function removeContext(refId: string): Promise<FocusState> {
+  const res = await fetch(`${API}/context/${refId}`, { method: "DELETE" });
   return res.json();
 }
 

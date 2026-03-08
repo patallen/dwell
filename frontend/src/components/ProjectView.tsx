@@ -9,7 +9,7 @@ interface ProjectViewProps {
   onBack: () => void;
 }
 
-export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
+export default function ProjectView({ projectId }: ProjectViewProps) {
   const [project, setProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -47,9 +47,12 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
     setEditingTitle(false);
   };
 
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+
   const handleAddTask = async () => {
-    if (!project) return;
-    await createTask({ title: "New task", parent: project.id });
+    if (!project || !newTaskTitle.trim()) return;
+    await createTask({ title: newTaskTitle.trim(), parent: project.id });
+    setNewTaskTitle("");
     setTasks(await fetchProjectTasks(project.id));
   };
 
@@ -124,32 +127,19 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
   const answeredQuestions = questions.filter(q => q.status === "answered");
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
-      <button onClick={onBack} className="text-sm text-text-muted hover:text-text-secondary transition-colors mb-6">
-        ← back
-      </button>
-
+    <div className="w-full max-w-4xl mx-auto">
       {/* Title */}
       {editingTitle ? (
         <input ref={titleRef} defaultValue={project.title} autoFocus
-          className="w-full text-3xl font-bold bg-transparent border-none outline-none text-text tracking-tight mb-2"
+          className="w-full text-3xl font-bold bg-transparent border-none outline-none text-text tracking-tight mb-1"
           onBlur={() => void handleTitleSubmit()}
-          onKeyDown={e => { if (e.key === "Enter") void handleTitleSubmit(); }} />
+          onKeyDown={e => { if (e.key === "Enter") { void handleTitleSubmit(); e.preventDefault(); } }} />
       ) : (
         <h1 onClick={() => setEditingTitle(true)}
-          className="text-3xl font-bold text-text tracking-tight mb-2 cursor-text">
+          className="text-3xl font-bold text-text tracking-tight mb-1 cursor-text">
           {project.title}
         </h1>
       )}
-
-      <div className="flex items-center gap-3 mb-8">
-        <span className="text-xs uppercase tracking-wider text-text-muted bg-surface px-2 py-0.5 rounded">
-          {project.status}
-        </span>
-        {project.deadline && (
-          <span className="text-xs text-text-muted">due {new Date(project.deadline).toLocaleDateString()}</span>
-        )}
-      </div>
 
       {/* Editor */}
       <div className="mb-10">
@@ -213,16 +203,18 @@ export default function ProjectView({ projectId, onBack }: ProjectViewProps) {
 
       {/* Tasks */}
       <div className="border-t border-border-subtle pt-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold">Tasks</h2>
-          <button onClick={() => void handleAddTask()} className="text-xs text-accent hover:text-accent/80 transition-colors">
-            + add task
-          </button>
-        </div>
+        <h2 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">Tasks</h2>
 
-        {openTasks.length === 0 && doneTasks.length === 0 && (
-          <p className="text-sm text-text-muted">No tasks yet</p>
-        )}
+        <div className="flex items-center gap-3 py-2 px-1">
+          <span className="size-4 rounded border border-border-subtle shrink-0" />
+          <input
+            value={newTaskTitle}
+            onChange={e => setNewTaskTitle(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") void handleAddTask(); }}
+            className="flex-1 text-sm bg-transparent border-none outline-none text-text placeholder:text-text-muted/60"
+            placeholder="Add a task..."
+          />
+        </div>
 
         {openTasks.map(t => (
           <TaskItem key={t.id} task={t} onToggle={handleTaskDone} onEdit={handleTaskEdit} onDelete={handleTaskDelete} />
