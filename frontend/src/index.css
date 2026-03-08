@@ -142,6 +142,23 @@ mark[data-type="open-question"]:hover {
   border-radius: 1px;
 }
 
+.vim-visual {
+  caret-color: transparent;
+}
+
+.vim-visual-range {
+  background: color-mix(in srgb, var(--color-accent) 40%, transparent);
+}
+
+.vim-visual .vim-block-cursor {
+  background: var(--color-text);
+  color: var(--color-background);
+}
+
+.vim-visual .vim-block-cursor-widget {
+  background: var(--color-text);
+}
+
 .vim-insert {
   caret-color: var(--color-success);
 }

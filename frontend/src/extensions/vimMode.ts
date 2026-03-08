@@ -2,7 +2,7 @@ import { Extension } from "@tiptap/core";
 import { Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 
-export type VimMode = "normal" | "insert";
+export type VimMode = "normal" | "insert" | "visual";
 
 export interface VimModeStorage {
   mode: VimMode;
@@ -29,12 +29,15 @@ export const VimMode = Extension.create<object, VimModeStorage>({
     const storage = this.storage;
     const editor = this.editor;
     let pending: string | null = null;
+    let visualAnchor: number = 0;
+    let visualHead: number = 0;
 
     const setMode = (mode: VimMode) => {
       storage.mode = mode;
       storage.onModeChange?.(mode);
-      editor.view.dom.classList.toggle("vim-normal", mode === "normal");
+      editor.view.dom.classList.toggle("vim-normal", mode === "normal" || mode === "visual");
       editor.view.dom.classList.toggle("vim-insert", mode === "insert");
+      editor.view.dom.classList.toggle("vim-visual", mode === "visual");
     };
 
     const VIM_TX = "vimCommand";
@@ -56,6 +59,29 @@ export const VimMode = Extension.create<object, VimModeStorage>({
       }
     };
 
+    // Move the visual cursor head to a new position, keeping anchor fixed.
+    // ProseMirror selection stays collapsed at head — range is rendered via decorations only.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const visualMoveTo = (doc: any, view: any, pos: number, bias: number = 1) => {
+      const clamped = Math.max(0, Math.min(doc.content.size, pos));
+      try {
+        const $pos = doc.resolve(clamped);
+        let resolved: number;
+        if (!$pos.parent.isTextblock) {
+          const near = TextSelection.near($pos, bias) as TextSelection;
+          resolved = near.from;
+        } else {
+          resolved = clamped;
+        }
+        visualHead = resolved;
+        // Keep ProseMirror selection collapsed at the head
+        const sel = TextSelection.create(doc, resolved);
+        view.dispatch(view.state.tr.setSelection(sel).setMeta(VIM_TX, true));
+      } catch {
+        // Invalid position, ignore
+      }
+    };
+
     // Dispatch a transaction marked as vim-originated (bypasses clamping)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vimDispatch = (view: any, tr: any) => {
@@ -68,7 +94,7 @@ export const VimMode = Extension.create<object, VimModeStorage>({
         // Clamp cursor in normal mode — only for external events (mouse clicks),
         // not for vim commands (which mark their transactions with VIM_TX)
         appendTransaction(trs, _oldState, newState) {
-          if (storage.mode !== "normal") return null;
+          if (storage.mode === "insert" || storage.mode === "visual") return null;
           if (trs.some((tr: { getMeta: (key: string) => unknown }) => tr.getMeta(VIM_TX))) return null;
           const { from, to } = newState.selection;
           if (from !== to) return null;
@@ -92,38 +118,59 @@ export const VimMode = Extension.create<object, VimModeStorage>({
         },
         props: {
           decorations(state) {
-            if (storage.mode !== "normal") return DecorationSet.empty;
-            const { from } = state.selection;
-            const $from = state.doc.resolve(from);
-            const nodeEnd = $from.end($from.depth);
+            if (storage.mode !== "normal" && storage.mode !== "visual") return DecorationSet.empty;
 
-            // Character under cursor — inline highlight
-            if (from < nodeEnd) {
-              try {
-                return DecorationSet.create(state.doc, [
-                  Decoration.inline(from, from + 1, { class: "vim-block-cursor" }),
-                ]);
-              } catch {
-                // fall through to widget
+            const cursorPos = storage.mode === "visual"
+              ? visualHead
+              : state.selection.from;
+            const $cur = state.doc.resolve(cursorPos);
+            const nodeEnd = $cur.end($cur.depth);
+
+            const decos: Decoration[] = [];
+
+            // Visual selection highlight (rendered via decoration, no native selection)
+            if (storage.mode === "visual") {
+              const sf = Math.min(visualAnchor, visualHead);
+              const st = Math.max(visualAnchor, visualHead) + 1;
+              const clampedSt = Math.min(st, state.doc.content.size);
+              if (sf < clampedSt) {
+                try {
+                  decos.push(Decoration.inline(sf, clampedSt, { class: "vim-visual-range" }));
+                } catch { /* ignore */ }
               }
             }
 
-            // Empty line — widget cursor
-            const cursorEl = document.createElement("span");
-            cursorEl.className = "vim-block-cursor vim-block-cursor-widget";
-            cursorEl.textContent = "\u00a0";
-            return DecorationSet.create(state.doc, [
-              Decoration.widget(from, cursorEl),
-            ]);
+            // Character under cursor — inline highlight
+            if (cursorPos < nodeEnd) {
+              try {
+                decos.push(Decoration.inline(cursorPos, cursorPos + 1, { class: "vim-block-cursor" }));
+              } catch {
+                // fall through to widget
+                const cursorEl = document.createElement("span");
+                cursorEl.className = "vim-block-cursor vim-block-cursor-widget";
+                cursorEl.textContent = "\u00a0";
+                decos.push(Decoration.widget(cursorPos, cursorEl));
+              }
+            } else {
+              // Empty line — widget cursor
+              const cursorEl = document.createElement("span");
+              cursorEl.className = "vim-block-cursor vim-block-cursor-widget";
+              cursorEl.textContent = "\u00a0";
+              decos.push(Decoration.widget(cursorPos, cursorEl));
+            }
+
+            // Sort decorations by from position for DecorationSet.create
+            decos.sort((a, b) => a.from - b.from);
+            return DecorationSet.create(state.doc, decos);
           },
           handleTextInput() {
-            return storage.mode === "normal";
+            return storage.mode !== "insert";
           },
           handlePaste() {
-            return storage.mode === "normal";
+            return storage.mode !== "insert";
           },
           handleDrop() {
-            return storage.mode === "normal";
+            return storage.mode !== "insert";
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           handleKeyDown(view: any, event: KeyboardEvent) {
@@ -149,6 +196,145 @@ export const VimMode = Extension.create<object, VimModeStorage>({
                 return true;
               }
               return false;
+            }
+
+            // VISUAL MODE
+            if (storage.mode === "visual") {
+              const { state: vState } = view;
+              const { doc: vDoc } = vState;
+              const cursorPos = visualHead;
+              const $head = vDoc.resolve(cursorPos);
+
+              const vKey = event.key;
+
+              switch (vKey) {
+                case "Escape":
+                case "v":
+                  // Exit visual, collapse to cursor pos
+                  setMode("normal");
+                  moveTo(vDoc, view, cursorPos);
+                  return true;
+
+                // --- Movement (extends selection) ---
+                case "h":
+                  visualMoveTo(vDoc, view, cursorPos - 1);
+                  return true;
+                case "l":
+                  visualMoveTo(vDoc, view, cursorPos + 1);
+                  return true;
+                case "j": {
+                  const coords = view.coordsAtPos(cursorPos);
+                  const below = view.posAtCoords({ left: coords.left, top: coords.bottom + 2 });
+                  if (below && below.pos !== cursorPos) {
+                    visualMoveTo(vDoc, view, below.pos);
+                  } else {
+                    const afterBlock = $head.after($head.depth);
+                    if (afterBlock < vDoc.content.size) {
+                      visualMoveTo(vDoc, view, afterBlock, 1);
+                    }
+                  }
+                  return true;
+                }
+                case "k": {
+                  const coords = view.coordsAtPos(cursorPos);
+                  const above = view.posAtCoords({ left: coords.left, top: coords.top - 2 });
+                  if (above && above.pos !== cursorPos) {
+                    visualMoveTo(vDoc, view, above.pos, -1);
+                  } else {
+                    const beforeBlock = $head.before($head.depth);
+                    if (beforeBlock > 0) {
+                      visualMoveTo(vDoc, view, beforeBlock - 1, -1);
+                    }
+                  }
+                  return true;
+                }
+                case "w": {
+                  const $cur = vDoc.resolve(cursorPos);
+                  const wEnd = $cur.end($cur.depth);
+                  const textAfter = vDoc.textBetween(cursorPos, wEnd, "\0", "\0");
+                  const wm = textAfter.match(/^.?\S*\s+/);
+                  if (wm) {
+                    visualMoveTo(vDoc, view, cursorPos + wm[0].length);
+                  } else {
+                    const afterBlock = $cur.after($cur.depth);
+                    if (afterBlock < vDoc.content.size) {
+                      visualMoveTo(vDoc, view, afterBlock, 1);
+                    }
+                  }
+                  return true;
+                }
+                case "b": {
+                  const $cur = vDoc.resolve(cursorPos);
+                  const bStart = $cur.start($cur.depth);
+                  const textBefore = vDoc.textBetween(bStart, cursorPos, "\0", "\0");
+                  const bm = textBefore.match(/\s(\S+)$/);
+                  if (bm) {
+                    visualMoveTo(vDoc, view, cursorPos - bm[1].length);
+                  } else if (cursorPos > bStart) {
+                    visualMoveTo(vDoc, view, bStart);
+                  } else {
+                    visualMoveTo(vDoc, view, bStart - 1, -1);
+                  }
+                  return true;
+                }
+                case "e": {
+                  const $cur = vDoc.resolve(cursorPos);
+                  const eEnd = $cur.end($cur.depth);
+                  const textAfterE = vDoc.textBetween(cursorPos, eEnd, "\0", "\0");
+                  const em = textAfterE.match(/^.?\s*\S+/);
+                  if (em) {
+                    visualMoveTo(vDoc, view, cursorPos + em[0].length - 1);
+                  } else if (cursorPos < eEnd - 1) {
+                    visualMoveTo(vDoc, view, eEnd - 1);
+                  } else {
+                    visualMoveTo(vDoc, view, eEnd + 1, 1);
+                  }
+                  return true;
+                }
+                case "0": {
+                  const $cur = vDoc.resolve(cursorPos);
+                  visualMoveTo(vDoc, view, $cur.start($cur.depth));
+                  return true;
+                }
+                case "$": {
+                  const $cur = vDoc.resolve(cursorPos);
+                  const end = $cur.end($cur.depth);
+                  visualMoveTo(vDoc, view, Math.max(end - 1, $cur.start($cur.depth)));
+                  return true;
+                }
+                case "G":
+                  visualMoveTo(vDoc, view, vDoc.content.size - 1);
+                  return true;
+                case "g":
+                  if (pending === "g") {
+                    visualMoveTo(vDoc, view, 1);
+                    pending = null;
+                  } else {
+                    pending = "g";
+                  }
+                  return true;
+
+                // --- Actions on selection ---
+                case "d": {
+                  // Delete visual range, return to normal
+                  const sf = Math.min(visualAnchor, visualHead);
+                  const st = Math.min(Math.max(visualAnchor, visualHead) + 1, vDoc.content.size);
+                  view.dispatch(vState.tr.delete(sf, st));
+                  setMode("normal");
+                  return true;
+                }
+                case "c": {
+                  // Change visual range: delete and enter insert
+                  const sf = Math.min(visualAnchor, visualHead);
+                  const st = Math.min(Math.max(visualAnchor, visualHead) + 1, vDoc.content.size);
+                  view.dispatch(vState.tr.delete(sf, st));
+                  setMode("insert");
+                  return true;
+                }
+
+                default:
+                  return true;
+              }
             }
 
             // NORMAL MODE
@@ -308,6 +494,14 @@ export const VimMode = Extension.create<object, VimModeStorage>({
               case "G": {
                 // End of document
                 moveTo(doc, view, doc.content.size - 1);
+                return true;
+              }
+
+              // --- Visual mode ---
+              case "v": {
+                visualAnchor = from;
+                visualHead = from;
+                setMode("visual");
                 return true;
               }
 

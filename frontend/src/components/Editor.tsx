@@ -177,7 +177,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
       {/* Vim mode indicator */}
       {vim && (
         <div className={`mt-2 text-[10px] font-mono tracking-widest uppercase ${
-          vimMode === "normal" ? "text-accent" : "text-success"
+          vimMode === "insert" ? "text-success" : "text-accent"
         }`}>
           -- {vimMode} --
         </div>
