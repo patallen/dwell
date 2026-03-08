@@ -2,6 +2,8 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { OpenQuestion } from "../extensions/openQuestion";
+import { VimMode } from "../extensions/vimMode";
+import type { VimMode as VimModeType, VimModeStorage } from "../extensions/vimMode";
 import { useCallback, useEffect, useState, useRef } from "react";
 
 export interface QuestionMenuAction {
@@ -16,18 +18,25 @@ interface EditorProps {
   onQuestion?: (text: string) => Promise<string | void>;
   onQuestionAction?: (action: QuestionMenuAction) => void;
   placeholder?: string;
+  vim?: boolean;
 }
 
-export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, placeholder }: EditorProps) {
+export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, placeholder, vim = true }: EditorProps) {
   const [toolbarPos, setToolbarPos] = useState<{ top: number; left: number } | null>(null);
+  const [vimMode, setVimMode] = useState<VimModeType>("normal");
   const toolbarRef = useRef<HTMLDivElement>(null);
 
+  const vimModeRef = useRef<VimModeType>(vim ? "normal" : "insert");
+
+  const extensions = [
+    StarterKit,
+    Placeholder.configure({ placeholder: placeholder || "Start writing..." }),
+    OpenQuestion,
+    ...(vim ? [VimMode] : []),
+  ];
+
   const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Placeholder.configure({ placeholder: placeholder || "Start writing..." }),
-      OpenQuestion,
-    ],
+    extensions,
     content,
     onUpdate: ({ editor }) => {
       onUpdate(editor.getHTML());
@@ -49,10 +58,12 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     },
     editorProps: {
       attributes: {
-        class: "tiptap outline-none min-h-[400px]",
+        class: "tiptap outline-none min-h-[200px]",
       },
       handleClick: (view, pos) => {
         if (!onQuestionAction) return false;
+        // Don't open question menu in vim normal mode — just navigate
+        if (vimModeRef.current === "normal") return false;
         const resolved = view.state.doc.resolve(pos);
         const marks = resolved.marks();
         const questionMark = marks.find(m => m.type.name === "openQuestion");
@@ -61,7 +72,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
           const editorRect = view.dom.getBoundingClientRect();
           onQuestionAction({
             questionId: questionMark.attrs.questionId,
-            questionText: "", // filled by parent from question entity
+            questionText: "",
             position: {
               top: coords.bottom - editorRect.top + 4,
               left: coords.left - editorRect.left,
@@ -73,6 +84,24 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
       },
     },
   });
+
+  // Wire up vim mode change callback via ref to avoid hook immutability lint
+  const vimCallbackRef = useRef<(mode: VimModeType) => void>(undefined);
+  vimCallbackRef.current = (mode: VimModeType) => { vimModeRef.current = mode; setVimMode(mode); };
+
+  useEffect(() => {
+    if (!editor || !vim) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const storage = (editor.storage as any).vimMode as VimModeStorage | undefined;
+    if (!storage) return;
+    // Use a stable wrapper that delegates to the ref
+    const wrapper = (mode: VimModeType) => vimCallbackRef.current?.(mode);
+    // eslint-disable-next-line react-hooks/immutability
+    storage.onModeChange = wrapper;
+    return () => {
+      if (storage.onModeChange === wrapper) storage.onModeChange = undefined;
+    };
+  }, [editor, vim]);
 
   useEffect(() => {
     if (editor && content !== editor.getHTML()) {
@@ -87,13 +116,11 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     const selectedText = editor.state.doc.textBetween(from, to);
     if (!selectedText.trim()) return;
 
-    // Check if already marked — if so, just toggle off
     if (editor.isActive("openQuestion")) {
       editor.chain().focus().toggleOpenQuestion().run();
       return;
     }
 
-    // Create a question entity and link the mark to it
     if (onQuestion) {
       const questionId = await onQuestion(selectedText.trim());
       if (questionId) {
@@ -108,6 +135,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
 
   return (
     <div className="relative">
+      {/* Selection toolbar */}
       {toolbarPos && (
         <div
           ref={toolbarRef}
@@ -144,6 +172,15 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
       )}
 
       <EditorContent editor={editor} />
+
+      {/* Vim mode indicator */}
+      {vim && (
+        <div className={`mt-2 text-[10px] font-mono tracking-widest uppercase ${
+          vimMode === "normal" ? "text-accent" : "text-success"
+        }`}>
+          -- {vimMode} --
+        </div>
+      )}
     </div>
   );
 }

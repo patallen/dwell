@@ -122,6 +122,30 @@ mark[data-type="open-question"]:hover {
   background: rgba(251, 191, 36, 0.25);
 }
 
+/* Vim mode cursor */
+.vim-normal {
+  caret-color: transparent;
+}
+
+.vim-block-cursor {
+  background: var(--color-accent);
+  color: var(--color-background);
+  border-radius: 1px;
+}
+
+.vim-block-cursor-widget {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.2em;
+  vertical-align: text-bottom;
+  background: var(--color-accent);
+  border-radius: 1px;
+}
+
+.vim-insert {
+  caret-color: var(--color-success);
+}
+
 /* WhereWasI animation */
 @keyframes where-was-i-in {
   from {

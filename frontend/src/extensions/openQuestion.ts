@@ -11,6 +11,7 @@ declare module "@tiptap/core" {
 
 export const OpenQuestion = Mark.create({
   name: "openQuestion",
+  inclusive: false,
 
   addAttributes() {
     return {
