@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Routes, Route, useNavigate, useParams, useLocation } from "react-router-dom";
-import type { Task, Project, FocusState } from "./api";
+import type { Task, Project, FocusState, EnergyLevel } from "./api";
 import {
   fetchFocus,
   fetchContext,
@@ -12,11 +12,40 @@ import {
   pushContext,
   popContext,
   removeContext,
+  setContextNote,
 } from "./api";
 import type { ContextEntry } from "./api";
 import ProjectView from "./components/ProjectView";
+import WhereWasI from "./components/WhereWasI";
+import NoteToSelf from "./components/NoteToSelf";
+import AmbientPulse from "./components/AmbientPulse";
+import SoftLanding from "./components/SoftLanding";
+import GentleWave from "./components/GentleWave";
+import { useBodyPrompts } from "./hooks/useBodyPrompts";
+import type { PromptType } from "./hooks/useBodyPrompts";
+import { useSessionTimer } from "./hooks/useSessionTimer";
+
+const LAST_SEEN_KEY = "adhdeez:lastSeen";
+const COLD_START_HOURS = 4;
+
+function isColdStart(): boolean {
+  try {
+    const raw = localStorage.getItem(LAST_SEEN_KEY);
+    if (!raw) return true;
+    const elapsed = (Date.now() - Number(raw)) / 3600000;
+    return elapsed >= COLD_START_HOURS;
+  } catch {
+    return true;
+  }
+}
 
 type Overlay = null | "capture" | "find" | "stack" | "projects" | "help" | "settings";
+
+type PendingAction =
+  | { type: "push"; refId: string; refType: string; reason: string }
+  | { type: "pause" }
+  | { type: "done" }
+  | { type: "drop" };
 
 function loeDot(loe: string | null) {
   if (loe === "hot") return "bg-urgent shadow-[0_0_6px_rgba(248,113,113,0.5)]";
@@ -38,6 +67,8 @@ function ProjectRoute() {
 }
 
 function App() {
+  const [showLanding, setShowLanding] = useState(isColdStart);
+  const [energy, setEnergy] = useState<EnergyLevel | null>(null);
   const [focus, setFocus] = useState<FocusState | null>(null);
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [captureText, setCaptureText] = useState("");
@@ -45,7 +76,11 @@ function App() {
   const [findResults, setFindResults] = useState<{ type: "task" | "project"; id: string; title: string; status: string }[]>([]);
   const [stackItems, setStackItems] = useState<ContextEntry[]>([]);
   const [projectList, setProjectList] = useState<Project[]>([]);
+  const [showWhereWasI, setShowWhereWasI] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const captureRef = useRef<HTMLInputElement>(null);
+  const bodyPrompts = useBodyPrompts();
+  const sessionTimer = useSessionTimer();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -53,40 +88,101 @@ function App() {
 
   const applyFocus = useCallback((state: FocusState) => {
     setFocus(state);
+    localStorage.setItem(LAST_SEEN_KEY, String(Date.now()));
   }, []);
 
   const refresh = useCallback(async () => {
-    applyFocus(await fetchFocus());
-  }, [applyFocus]);
+    applyFocus(await fetchFocus(energy ?? undefined));
+  }, [applyFocus, energy]);
 
   useEffect(() => {
-    fetchFocus().then(applyFocus);
-  }, [applyFocus, location.pathname]);
+    if (showLanding) return; // Don't fetch until landing is dismissed
+    fetchFocus(energy ?? undefined).then(applyFocus);
+  }, [applyFocus, energy, location.pathname, showLanding]);
 
-  const handlePick = async (task: Task, reason: string) => {
-    await pushContext(task.id, "task", reason);
+  const handleLanding = useCallback((selected: EnergyLevel) => {
+    setEnergy(selected);
+    setShowLanding(false);
+  }, []);
+
+  // Execute an action that leaves the current focus, optionally with a note
+  const executeAction = useCallback(async (action: PendingAction, note?: string) => {
+    let showRestore = false;
+
+    if (action.type === "push") {
+      const result = await pushContext(action.refId, action.refType, action.reason, note);
+      // Check for note-based restoration before refreshing with energy
+      if (result.state === "focused" && result.context?.note) {
+        showRestore = true;
+      }
+    } else if (action.type === "pause") {
+      const result = await popContext();
+      if (result.state === "focused") {
+        showRestore = true;
+      }
+    } else if (action.type === "done") {
+      if (focus?.task) {
+        await updateTask(focus.task.id, { status: "done" });
+        if (focus.state === "focused") {
+          const result = await popContext();
+          if (result.state === "focused") {
+            showRestore = true;
+          }
+        }
+      }
+    } else if (action.type === "drop") {
+      if (focus?.task) {
+        await updateTask(focus.task.id, { status: "dropped" });
+        if (focus.state === "focused") {
+          const result = await popContext();
+          if (result.state === "focused") {
+            showRestore = true;
+          }
+        }
+      }
+    }
+
+    // Refresh with energy param to get correctly ranked suggestions
     await refresh();
+    if (showRestore) {
+      setShowWhereWasI(true);
+    }
+  }, [focus, refresh]);
+
+  // Initiate an action — show note prompt only when the current entry stays in the stack (push)
+  const initiateAction = useCallback((action: PendingAction) => {
+    // If WhereWasI is showing, dismiss it (user has seen it, clear the note)
+    if (showWhereWasI) {
+      setShowWhereWasI(false);
+      void setContextNote("");
+    }
+    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.project)) {
+      // Switching to something new — current entry stays in stack, note is useful
+      setPendingAction(action);
+    } else {
+      // Pause/done/drop — current entry is removed from stack, note would be lost
+      void executeAction(action);
+    }
+  }, [focus, executeAction, showWhereWasI]);
+
+  const handlePick = (task: Task, reason: string) => {
+    initiateAction({ type: "push", refId: task.id, refType: "task", reason });
   };
 
-  const handleDone = useCallback(async () => {
+  const handleDone = useCallback(() => {
     if (!focus?.task) return;
-    await updateTask(focus.task.id, { status: "done" });
-    if (focus.state === "focused") await popContext();
-    await refresh();
-  }, [focus, refresh]);
+    initiateAction({ type: "done" });
+  }, [focus, initiateAction]);
 
-  const handlePause = useCallback(async () => {
+  const handlePause = useCallback(() => {
     if (focus?.state !== "focused") return;
-    await popContext();
-    await refresh();
-  }, [focus, refresh]);
+    initiateAction({ type: "pause" });
+  }, [focus, initiateAction]);
 
-  const handleDrop = useCallback(async () => {
+  const handleDrop = useCallback(() => {
     if (!focus?.task) return;
-    await updateTask(focus.task.id, { status: "dropped" });
-    if (focus.state === "focused") await popContext();
-    await refresh();
-  }, [focus, refresh]);
+    initiateAction({ type: "drop" });
+  }, [focus, initiateAction]);
 
   const handleCapture = async () => {
     if (!captureText.trim()) return;
@@ -109,17 +205,14 @@ function App() {
     ]);
   };
 
-  const handleFindSelect = async (result: { type: "task" | "project"; id: string }) => {
+  const handleFindSelect = (result: { type: "task" | "project"; id: string }) => {
     setOverlay(null);
     setFindText("");
     setFindResults([]);
     if (result.type === "project") {
-      await pushContext(result.id, "project", "picked from search");
       navigate(`/project/${result.id}`);
-    } else {
-      await pushContext(result.id, "task", "picked from search");
     }
-    await refresh();
+    initiateAction({ type: "push", refId: result.id, refType: result.type, reason: "picked from search" });
   };
 
   const loadStack = async () => {
@@ -149,7 +242,7 @@ function App() {
         if (overlay) { setOverlay(null); setCaptureText(""); setFindText(""); setFindResults([]); return; }
         return;
       }
-      if (overlay) return;
+      if (overlay || pendingAction) return;
 
       if (meta && e.key === "i") { e.preventDefault(); setCaptureText(""); setOverlay("capture"); return; }
       if (meta && e.key === "/") { e.preventDefault(); setFindText(""); setFindResults([]); setOverlay("find"); return; }
@@ -166,10 +259,14 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [overlay, focus, isProjectView, handleDone, handleDrop, handlePause]);
+  }, [overlay, pendingAction, focus, isProjectView, handleDone, handleDrop, handlePause]);
 
   const task = focus?.task;
   const suggestions = focus?.suggestions || [];
+
+  if (showLanding) {
+    return <SoftLanding onSelect={handleLanding} />;
+  }
 
   return (
     <div className="h-dvh flex flex-col bg-background font-sans text-text antialiased">
@@ -238,10 +335,15 @@ function App() {
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm text-text group">
                       {i === 0 && <span className="size-1.5 rounded-full bg-accent shrink-0" />}
                       {i > 0 && <span className="size-1.5 rounded-full bg-text-muted/40 shrink-0" />}
-                      <span className={i === 0 ? "font-medium" : "text-text-secondary"}>
-                        {entry.task?.title || entry.project?.title || entry.ref_id}
-                      </span>
-                      {entry.reason && <span className="ml-auto text-xs text-text-muted shrink-0">{entry.reason}</span>}
+                      <div className="flex flex-col min-w-0">
+                        <span className={i === 0 ? "font-medium" : "text-text-secondary"}>
+                          {entry.task?.title || entry.project?.title || entry.ref_id}
+                        </span>
+                        {entry.note && (
+                          <span className="text-xs text-accent-dim italic truncate">&ldquo;{entry.note}&rdquo;</span>
+                        )}
+                      </div>
+                      {entry.reason && !entry.note && <span className="ml-auto text-xs text-text-muted shrink-0">{entry.reason}</span>}
                       <button
                         onClick={async () => {
                           await removeContext(entry.ref_id);
@@ -293,11 +395,115 @@ function App() {
             </>}
             {overlay === "settings" && <>
               <h3 className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3.5">Settings</h3>
-              <p className="text-sm text-text-muted mb-2">nothing here yet</p>
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-sm text-text-secondary">Body prompts</span>
+                  <button
+                    onClick={() => bodyPrompts.updateConfig({ enabled: !bodyPrompts.config.enabled })}
+                    className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${bodyPrompts.config.enabled ? "bg-success/15 text-success" : "bg-surface text-text-muted"}`}
+                  >
+                    {bodyPrompts.config.enabled ? "on" : "off"}
+                  </button>
+                </div>
+                {bodyPrompts.config.enabled && (
+                  <div className="flex flex-col gap-2 pl-1">
+                    {(["water", "movement", "meal"] as PromptType[]).map(type => (
+                      <div key={type} className="flex items-center justify-between text-sm">
+                        <span className="text-text-muted capitalize">{type}</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              const cur = bodyPrompts.config.intervals[type];
+                              if (cur > 15) bodyPrompts.updateConfig({
+                                intervals: { ...bodyPrompts.config.intervals, [type]: cur - 15 }
+                              });
+                            }}
+                            className="text-xs text-text-muted hover:text-text px-1"
+                          >-</button>
+                          <span className="text-xs text-text-secondary w-12 text-center">
+                            {bodyPrompts.config.intervals[type]}m
+                          </span>
+                          <button
+                            onClick={() => {
+                              const cur = bodyPrompts.config.intervals[type];
+                              bodyPrompts.updateConfig({
+                                intervals: { ...bodyPrompts.config.intervals, [type]: cur + 15 }
+                              });
+                            }}
+                            className="text-xs text-text-muted hover:text-text px-1"
+                          >+</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-sm text-text-secondary">Session guardrails</span>
+                  <button
+                    onClick={() => sessionTimer.updateConfig({ enabled: !sessionTimer.config.enabled })}
+                    className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${sessionTimer.config.enabled ? "bg-success/15 text-success" : "bg-surface text-text-muted"}`}
+                  >
+                    {sessionTimer.config.enabled ? "on" : "off"}
+                  </button>
+                </div>
+                {sessionTimer.config.enabled && (
+                  <div className="flex items-center justify-between text-sm pl-1">
+                    <span className="text-text-muted">Remind after</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const cur = sessionTimer.config.intervalMinutes;
+                          if (cur > 15) sessionTimer.updateConfig({ intervalMinutes: cur - 15 });
+                        }}
+                        className="text-xs text-text-muted hover:text-text px-1"
+                      >-</button>
+                      <span className="text-xs text-text-secondary w-12 text-center">
+                        {sessionTimer.config.intervalMinutes}m
+                      </span>
+                      <button
+                        onClick={() => {
+                          const cur = sessionTimer.config.intervalMinutes;
+                          sessionTimer.updateConfig({ intervalMinutes: cur + 15 });
+                        }}
+                        className="text-xs text-text-muted hover:text-text px-1"
+                      >+</button>
+                    </div>
+                  </div>
+                )}
+              </div>
               <span className="text-xs text-text-muted pt-2.5 border-t border-border">esc to close</span>
             </>}
           </div>
         </div>
+      )}
+
+      {/* Note to self prompt */}
+      {pendingAction && (
+        <NoteToSelf
+          taskTitle={focus?.task?.title || focus?.project?.title || "current task"}
+          onSubmit={(note) => {
+            setPendingAction(null);
+            void executeAction(pendingAction, note);
+          }}
+          onSkip={() => {
+            setPendingAction(null);
+            void executeAction(pendingAction);
+          }}
+        />
+      )}
+
+      {/* Where Was I restoration card — hide when NoteToSelf is active */}
+      {showWhereWasI && !pendingAction && focus?.state === "focused" && (
+        <WhereWasI
+          focus={focus}
+          onDismiss={() => {
+            setShowWhereWasI(false);
+            // Clear the note so it doesn't show again on next visit
+            void setContextNote("");
+          }}
+        />
       )}
 
       {/* Main */}
@@ -408,13 +614,35 @@ function App() {
         </Routes>
       </main>
 
+      {/* Session guardrail — suppress when overlay or modal is active */}
+      {sessionTimer.showWave && !overlay && !pendingAction && (
+        <GentleWave
+          minutes={sessionTimer.sessionMinutes}
+          onDismiss={sessionTimer.dismiss}
+          onSnooze={sessionTimer.snooze}
+        />
+      )}
+
       {/* Footer */}
-      <footer className="sticky bottom-0 z-40 px-6 py-3 border-t border-border-subtle flex flex-wrap gap-5 text-xs text-text-muted shrink-0 sm:px-10 bg-background/80 backdrop-blur-md">
+      <footer className="sticky bottom-0 z-40 px-6 py-3 border-t border-border-subtle flex flex-wrap items-center gap-5 text-xs text-text-muted shrink-0 sm:px-10 bg-background/80 backdrop-blur-md">
         <span>⌘I capture</span>
         <span>⌘/ find</span>
         <span>⌘J stack</span>
         <span>⌘P projects</span>
         <span>⌘. help</span>
+        {bodyPrompts.activePrompts.length > 0 && (
+          <div className="ml-auto flex items-center gap-4">
+            {bodyPrompts.activePrompts.map(prompt => (
+              <AmbientPulse
+                key={prompt.type}
+                prompt={prompt}
+                label={bodyPrompts.PROMPT_LABELS[prompt.type]}
+                onAcknowledge={bodyPrompts.acknowledge}
+                onSnooze={bodyPrompts.snooze}
+              />
+            ))}
+          </div>
+        )}
       </footer>
     </div>
   );

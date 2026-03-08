@@ -11,12 +11,14 @@ export interface Task {
   created_at: string;
   updated_at: string;
   last_viewed: string | null;
+  completed_at: string | null;
 }
 
 export interface ContextEntry {
   type: string;
   ref_id: string;
   reason: string;
+  note?: string | null;
   pushed_at: string;
   task?: Task | null;
   project?: Project | null;
@@ -47,6 +49,13 @@ export interface Project {
   updated_at: string;
 }
 
+export interface PoppedEntry {
+  type: string;
+  ref_id: string;
+  reason: string;
+  note?: string | null;
+}
+
 export interface FocusState {
   state: "focused" | "suggesting" | "empty";
   task?: Task | null;
@@ -54,18 +63,31 @@ export interface FocusState {
   suggestions?: Suggestion[];
   context?: ContextEntry;
   stack_depth?: number;
+  popped?: PoppedEntry;
 }
 
-export async function fetchFocus(): Promise<FocusState> {
-  const res = await fetch(`${API}/focus`);
+export type EnergyLevel = "calm" | "neutral" | "rough";
+
+export async function fetchFocus(energy?: EnergyLevel): Promise<FocusState> {
+  const url = energy ? `${API}/focus?energy=${energy}` : `${API}/focus`;
+  const res = await fetch(url);
   return res.json();
 }
 
-export async function pushContext(refId: string, type = "task", reason = ""): Promise<FocusState> {
+export async function pushContext(refId: string, type = "task", reason = "", noteForCurrent?: string): Promise<FocusState> {
   const res = await fetch(`${API}/context/push`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type, ref_id: refId, reason }),
+    body: JSON.stringify({ type, ref_id: refId, reason, note_for_current: noteForCurrent || null }),
+  });
+  return res.json();
+}
+
+export async function setContextNote(note: string): Promise<FocusState> {
+  const res = await fetch(`${API}/context/note`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
   });
   return res.json();
 }

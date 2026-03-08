@@ -70,13 +70,14 @@ class ContextPushRequest(BaseModel):
     type: str = "task"
     ref_id: str
     reason: str = ""
+    note_for_current: str | None = None  # note to attach to the current top-of-stack before pushing
 
 
 # --- Focus ---
 
 
 @app.get("/focus")
-def get_focus():
+def get_focus(energy: str | None = None):
     """Returns context-aware focus state: current focus or suggestion."""
     top = store.context_peek()
     if top:
@@ -86,19 +87,20 @@ def get_focus():
             task = store.get(top.ref_id, track_view=True)
             if not task or task.status != "open":
                 store.context_pop()
-                return get_focus()
+                return get_focus(energy)
         elif top.type == "project":
             project = store.get_project(top.ref_id)
             if not project:
                 store.context_pop()
-                return get_focus()
-        suggestions = store.suggest()
+                return get_focus(energy)
+        suggestions = store.suggest(skip_ids=[top.ref_id], energy=energy)
         return {
             "state": "focused",
             "context": {
                 "type": top.type,
                 "ref_id": top.ref_id,
                 "reason": top.reason,
+                "note": top.note,
                 "pushed_at": top.pushed_at.isoformat(),
             },
             "task": asdict(task) if task else None,
@@ -111,7 +113,7 @@ def get_focus():
         }
 
     # No current focus — suggest options
-    suggestions = store.suggest()
+    suggestions = store.suggest(energy=energy)
     if not suggestions:
         return {"state": "empty", "suggestions": []}
 
@@ -136,6 +138,7 @@ def get_context():
             "type": entry.type,
             "ref_id": entry.ref_id,
             "reason": entry.reason,
+            "note": entry.note,
             "pushed_at": entry.pushed_at.isoformat(),
         }
         if entry.type == "task":
@@ -150,6 +153,9 @@ def get_context():
 
 @app.post("/context/push")
 def push_context(req: ContextPushRequest):
+    # Attach note to current top-of-stack before pushing (the "note to self" for when you come back)
+    if req.note_for_current:
+        store.context_set_note(req.note_for_current)
     entry = ContextEntry(
         type=req.type,
         ref_id=req.ref_id,
@@ -160,10 +166,30 @@ def push_context(req: ContextPushRequest):
     return get_focus()
 
 
+class ContextNoteRequest(BaseModel):
+    note: str
+
+
+@app.post("/context/note")
+def set_context_note(req: ContextNoteRequest):
+    """Set a note on the current top-of-stack entry (for context restoration on return)."""
+    store.context_set_note(req.note)
+    return get_focus()
+
+
 @app.post("/context/pop")
 def pop_context():
-    store.context_pop()
-    return get_focus()
+    popped = store.context_pop()
+    focus = get_focus()
+    # Include popped entry info so frontend can show transition
+    if popped:
+        focus["popped"] = {
+            "type": popped.type,
+            "ref_id": popped.ref_id,
+            "reason": popped.reason,
+            "note": popped.note,
+        }
+    return focus
 
 
 @app.delete("/context/{ref_id}")
@@ -226,6 +252,10 @@ def update_task(task_id: str, req: UpdateTaskRequest):
         task.body = req.body
     if req.status is not None:
         task.status = req.status
+        if req.status == "done":
+            task.completed_at = datetime.now()
+        elif req.status == "open":
+            task.completed_at = None
     if req.loe is not None:
         task.loe = req.loe
     if req.deadline is not None:

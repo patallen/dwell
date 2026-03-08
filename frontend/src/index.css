@@ -121,3 +121,29 @@ mark[data-type="open-question"] {
 mark[data-type="open-question"]:hover {
   background: rgba(251, 191, 36, 0.25);
 }
+
+/* WhereWasI animation */
+@keyframes where-was-i-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.animate-in {
+  animation: where-was-i-in 0.3s ease-out forwards;
+}
+
+/* Body-state prompt pulse */
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}

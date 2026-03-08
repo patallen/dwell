@@ -15,6 +15,7 @@ class Task:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     last_viewed: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
     file_path: str = ""
 
 
@@ -46,4 +47,5 @@ class ContextEntry:
     type: str  # task | project | nudge
     ref_id: str
     reason: str = ""
+    note: Optional[str] = None  # "note to self" for context restoration
     pushed_at: datetime = field(default_factory=datetime.now)

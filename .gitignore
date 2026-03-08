@@ -9,3 +9,4 @@ frontend/src-tauri/gen/
 .idea
 .CLAUDE.md
 .claude/
+.playwright-mcp/

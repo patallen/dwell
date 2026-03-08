@@ -78,6 +78,7 @@ class FileStore:
             created_at=self._parse_datetime(meta, "created") or datetime.now(),
             updated_at=self._parse_datetime(meta, "updated") or datetime.now(),
             last_viewed=self._parse_datetime(meta, "last_viewed"),
+            completed_at=self._parse_datetime(meta, "completed_at"),
             file_path=str(path),
         )
 
@@ -154,7 +155,45 @@ class FileStore:
         open_tasks.sort(key=lambda t: self._score(t), reverse=True)
         return open_tasks
 
-    def _score(self, task: Task) -> float:
+    def _time_of_day_boost(self, task: Task) -> float:
+        """Boost tasks whose loe matches historically productive time windows."""
+        # Collect all completed tasks
+        completed = [t for t in self.tasks.values() if t.completed_at]
+        if len(completed) < 10:
+            return 0.0  # not enough data
+
+        # Current 4-hour window (0-3, 4-7, 8-11, 12-15, 16-19, 20-23)
+        current_window = datetime.now().hour // 4
+
+        # Count completions per loe in the current window
+        window_counts: dict[str | None, int] = {}
+        total_in_window = 0
+        for t in completed:
+            if t.completed_at.hour // 4 == current_window:
+                window_counts[t.loe] = window_counts.get(t.loe, 0) + 1
+                total_in_window += 1
+
+        if total_in_window < 3:
+            return 0.0  # not enough data for this window
+
+        # Count total completions per loe (across all windows)
+        total_counts: dict[str | None, int] = {}
+        for t in completed:
+            total_counts[t.loe] = total_counts.get(t.loe, 0) + 1
+
+        # If this task's loe is over-represented in the current window
+        # relative to its overall share, give it a boost
+        task_loe = task.loe
+        window_share = window_counts.get(task_loe, 0) / total_in_window
+        overall_share = total_counts.get(task_loe, 0) / len(completed)
+
+        if overall_share > 0 and window_share > overall_share:
+            # Proportional boost, capped at 15
+            return min(15.0, (window_share / overall_share - 1) * 10)
+
+        return 0.0
+
+    def _score(self, task: Task, energy: str | None = None) -> float:
         now = datetime.now()
         s = 0.0
 
@@ -174,9 +213,44 @@ class FileStore:
         elif task.loe == "warm":
             s += 10
 
+        # Time-of-day awareness — quiet boost based on completion history
+        s += self._time_of_day_boost(task)
+
+        if energy == "rough":
+            # Suppress deadline pressure — don't pile on when the wall is high
+            if task.deadline:
+                hours_until = (task.deadline - now).total_seconds() / 3600
+                if hours_until < 0:
+                    s -= 80  # reduce overdue from 100 to 20
+                elif hours_until < 24:
+                    s -= 40  # reduce due-today from 50 to 10
+            # Boost quick wins
+            if task.loe == "hot":
+                s += 15
+            # Boost standalone tasks (no project = lower stakes)
+            if not task.parent:
+                s += 10
+            # Boost novel/recent tasks (created in last 48h)
+            age_hours = (now - task.created_at).total_seconds() / 3600
+            if age_hours < 48:
+                s += 15
+        elif energy == "calm":
+            # Lean into deadline tasks — you can handle them today
+            if task.deadline:
+                hours_until = (task.deadline - now).total_seconds() / 3600
+                if hours_until < 0:
+                    s += 20  # extra push on overdue
+                elif hours_until < 24:
+                    s += 10
+            # Boost warm/cool (bigger) tasks
+            if task.loe == "warm":
+                s += 10
+            elif task.loe == "cool":
+                s += 5
+
         return s
 
-    def _score_reason(self, task: Task) -> str:
+    def _score_reason(self, task: Task, energy: str | None = None) -> str:
         """Human-readable reason why this task was suggested."""
         now = datetime.now()
         reasons = []
@@ -195,16 +269,23 @@ class FileStore:
         if task.loe == "hot":
             reasons.append("quick win")
 
+        if energy == "rough":
+            age_hours = (now - task.created_at).total_seconds() / 3600
+            if age_hours < 48:
+                reasons.append("fresh")
+            if not task.parent:
+                reasons.append("low-stakes")
+
         return " · ".join(reasons) if reasons else "highest priority"
 
-    def suggest(self, skip_ids: list[str] | None = None, limit: int = 5) -> list[dict]:
+    def suggest(self, skip_ids: list[str] | None = None, limit: int = 5, energy: str | None = None) -> list[dict]:
         """Return top task suggestions with reasoning."""
         open_tasks = [t for t in self.tasks.values() if t.status == "open"]
         if skip_ids:
             open_tasks = [t for t in open_tasks if t.id not in skip_ids]
-        open_tasks.sort(key=lambda t: self._score(t), reverse=True)
+        open_tasks.sort(key=lambda t: self._score(t, energy), reverse=True)
         return [
-            {"task": t, "reason": self._score_reason(t)}
+            {"task": t, "reason": self._score_reason(t, energy)}
             for t in open_tasks[:limit]
         ]
 
@@ -351,6 +432,7 @@ class FileStore:
                     type=e["type"],
                     ref_id=e["ref_id"],
                     reason=e.get("reason", ""),
+                    note=e.get("note"),
                     pushed_at=datetime.fromisoformat(e["pushed_at"]),
                 )
                 for e in data
@@ -364,6 +446,7 @@ class FileStore:
                 "type": e.type,
                 "ref_id": e.ref_id,
                 "reason": e.reason,
+                "note": e.note,
                 "pushed_at": e.pushed_at.isoformat(),
             }
             for e in self.context_stack
@@ -371,7 +454,11 @@ class FileStore:
         self._context_path().write_text(json.dumps(data, indent=2))
 
     def context_push(self, entry: ContextEntry) -> list[ContextEntry]:
-        # Remove if already in stack (will re-push to top)
+        # If re-pushing an existing entry, preserve its note
+        for e in self.context_stack:
+            if e.ref_id == entry.ref_id and e.note and not entry.note:
+                entry.note = e.note
+                break
         self.context_stack = [e for e in self.context_stack if e.ref_id != entry.ref_id]
         self.context_stack.insert(0, entry)
         self._save_context()
@@ -383,6 +470,14 @@ class FileStore:
         entry = self.context_stack.pop(0)
         self._save_context()
         return entry
+
+    def context_set_note(self, note: str) -> bool:
+        """Set a note on the current top-of-stack entry."""
+        if not self.context_stack:
+            return False
+        self.context_stack[0].note = note or None
+        self._save_context()
+        return True
 
     def context_peek(self) -> ContextEntry | None:
         return self.context_stack[0] if self.context_stack else None
@@ -417,6 +512,8 @@ class FileStore:
             meta["parent"] = task.parent
         if task.last_viewed:
             meta["last_viewed"] = task.last_viewed.isoformat()
+        if task.completed_at:
+            meta["completed_at"] = task.completed_at.isoformat()
 
         frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False)
         content = f"---\n{frontmatter}---\n\n{task.body}\n"
