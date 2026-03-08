@@ -38,6 +38,8 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
   const [showTypeMenu, setShowTypeMenu] = useState(false);
   const [showStatusMenu, setShowStatusMenu] = useState(false);
   const [showDoneItems, setShowDoneItems] = useState(false);
+  const [showQuestions, setShowQuestions] = useState(false);
+  const [showTasks, setShowTasks] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -238,16 +240,31 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="border-b border-border-subtle mb-5" />
+      {/* Summary bar — collapsed questions & tasks */}
+      {(openQuestions.length > 0 || openTasks.length > 0) && (
+        <div className="flex items-center gap-3 mb-4">
+          {openQuestions.length > 0 && (
+            <button
+              onClick={() => setShowQuestions(!showQuestions)}
+              className={`text-xs px-2 py-0.5 rounded transition-colors ${showQuestions ? "bg-warn/15 text-warn" : "text-warn/70 hover:text-warn"}`}
+            >
+              {openQuestions.length} question{openQuestions.length > 1 ? "s" : ""}
+            </button>
+          )}
+          {openTasks.length > 0 && (
+            <button
+              onClick={() => setShowTasks(!showTasks)}
+              className={`text-xs px-2 py-0.5 rounded transition-colors ${showTasks ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text-secondary"}`}
+            >
+              {openTasks.length} task{openTasks.length > 1 ? "s" : ""}
+            </button>
+          )}
+        </div>
+      )}
 
-      {/* Open questions — attention signal */}
-      {openQuestions.length > 0 && (
-        <div className="mb-5">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-warn text-xs font-semibold">{openQuestions.length} open</span>
-            <span className="text-[10px] uppercase tracking-wider text-text-muted">questions</span>
-          </div>
+      {/* Open questions — expanded */}
+      {showQuestions && openQuestions.length > 0 && (
+        <div className="mb-4">
           <div className="flex flex-col gap-1.5">
             {openQuestions.map(q => (
               <QuestionRow key={q.id} question={q} onAnswer={handleAnswerQuestion} onDelete={handleDeleteQuestion} />
@@ -256,30 +273,27 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
         </div>
       )}
 
-      {/* Open tasks — what needs doing */}
-      <div className="mb-5">
-        {openTasks.length > 0 && (
-          <div className="flex flex-col gap-0.5 mb-1">
-            {openTasks.map(t => (
-              <TaskRow key={t.id} task={t} onToggle={handleTaskDone} onEdit={handleTaskEdit} onDelete={handleTaskDelete} />
-            ))}
+      {/* Open tasks — expanded */}
+      {showTasks && (
+        <div className="mb-4">
+          {openTasks.length > 0 && (
+            <div className="flex flex-col gap-0.5 mb-1">
+              {openTasks.map(t => (
+                <TaskRow key={t.id} task={t} onToggle={handleTaskDone} onEdit={handleTaskEdit} onDelete={handleTaskDelete} />
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 pl-1">
+            <span className="text-text-muted text-sm">+</span>
+            <input
+              value={newTaskTitle}
+              onChange={e => setNewTaskTitle(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") void handleAddTask(); }}
+              className="flex-1 text-sm bg-transparent border-none outline-none text-text-secondary placeholder:text-text-muted/50"
+              placeholder="add task"
+            />
           </div>
-        )}
-        <div className="flex items-center gap-2 pl-1">
-          <span className="text-text-muted text-sm">+</span>
-          <input
-            value={newTaskTitle}
-            onChange={e => setNewTaskTitle(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") void handleAddTask(); }}
-            className="flex-1 text-sm bg-transparent border-none outline-none text-text-secondary placeholder:text-text-muted/50"
-            placeholder="add task"
-          />
         </div>
-      </div>
-
-      {/* Divider before editor */}
-      {(openQuestions.length > 0 || openTasks.length > 0) && (
-        <div className="border-b border-border-subtle mb-5" />
       )}
 
       {/* Editor — the thinking surface */}

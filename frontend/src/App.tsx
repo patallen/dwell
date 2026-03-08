@@ -270,31 +270,6 @@ function App() {
 
   return (
     <div className="h-dvh flex flex-col bg-background font-sans text-text antialiased">
-      {/* Header */}
-      <header className="sticky top-0 z-40 px-6 py-4 border-b border-border-subtle shrink-0 sm:px-10 flex items-center gap-4 bg-background/80 backdrop-blur-md">
-        <span className="text-sm font-bold tracking-tight text-accent cursor-pointer" onClick={() => navigate("/")}>adhdeez</span>
-        {focus?.state === "focused" && (
-          <div
-            className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer group"
-            onClick={() => {
-              if (focus.context?.type === "note" && focus.note) {
-                navigate(`/note/${focus.note.id}`);
-              } else {
-                navigate("/");
-              }
-            }}
-          >
-            <span className="text-text-muted text-xs shrink-0">→</span>
-            <span className="text-xs text-text-secondary truncate group-hover:text-text transition-colors">
-              {focus.task?.title || focus.note?.title}
-            </span>
-          </div>
-        )}
-        {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (
-          <span className="text-xs text-text-muted shrink-0">{focus.stack_depth - 1} paused</span>
-        )}
-      </header>
-
       {/* Overlay */}
       {overlay && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[16vh] bg-black/70 backdrop-blur-sm" onClick={() => setOverlay(null)}>
@@ -643,7 +618,25 @@ function App() {
       )}
 
       {/* Footer */}
-      <footer className="sticky bottom-0 z-40 px-6 py-3 border-t border-border-subtle flex flex-wrap items-center gap-5 text-xs text-text-muted shrink-0 sm:px-10 bg-background/80 backdrop-blur-md">
+      <footer className="sticky bottom-0 z-40 px-6 py-2.5 border-t border-border-subtle flex flex-wrap items-center gap-4 text-xs text-text-muted shrink-0 sm:px-10 bg-background/80 backdrop-blur-md">
+        {focus?.state === "focused" && (
+          <span
+            className="text-text-secondary truncate max-w-[200px] cursor-pointer hover:text-text transition-colors"
+            onClick={() => {
+              if (focus.context?.type === "note" && focus.note) {
+                navigate(`/note/${focus.note.id}`);
+              } else {
+                navigate("/");
+              }
+            }}
+          >
+            {focus.task?.title || focus.note?.title}
+          </span>
+        )}
+        {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (
+          <span>{focus.stack_depth - 1} paused</span>
+        )}
+        <span className="ml-auto" />
         <span>⌘I capture</span>
         <span>⌘/ find</span>
         <span>⌘J stack</span>
