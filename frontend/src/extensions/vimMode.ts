@@ -315,6 +315,7 @@ export const VimMode = Extension.create<object, VimModeStorage>({
                   return true;
 
                 // --- Actions on selection ---
+                case "x":
                 case "d": {
                   // Delete visual range, return to normal
                   const sf = Math.min(visualAnchor, visualHead);
