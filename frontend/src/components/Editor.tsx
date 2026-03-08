@@ -36,6 +36,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
   ];
 
   const editor = useEditor({
+    autofocus: true,
     extensions,
     content,
     onUpdate: ({ editor }) => {

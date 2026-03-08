@@ -37,6 +37,8 @@ export const VimMode = Extension.create<object, VimModeStorage>({
       editor.view.dom.classList.toggle("vim-insert", mode === "insert");
     };
 
+    const VIM_TX = "vimCommand";
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const moveTo = (doc: any, view: any, pos: number, bias: number = 1) => {
       const clamped = Math.max(0, Math.min(doc.content.size, pos));
@@ -54,12 +56,20 @@ export const VimMode = Extension.create<object, VimModeStorage>({
       }
     };
 
+    // Dispatch a transaction marked as vim-originated (bypasses clamping)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vimDispatch = (view: any, tr: any) => {
+      view.dispatch(tr.setMeta(VIM_TX, true));
+    };
+
     return [
       new Plugin({
         key: vimPluginKey,
-        // Clamp cursor in normal mode: always on a character, never past end or between blocks
-        appendTransaction(_trs, _oldState, newState) {
+        // Clamp cursor in normal mode — only for external events (mouse clicks),
+        // not for vim commands (which mark their transactions with VIM_TX)
+        appendTransaction(trs, _oldState, newState) {
           if (storage.mode !== "normal") return null;
+          if (trs.some((tr: { getMeta: (key: string) => unknown }) => tr.getMeta(VIM_TX))) return null;
           const { from, to } = newState.selection;
           if (from !== to) return null;
           const $from = newState.doc.resolve(from);
@@ -307,11 +317,10 @@ export const VimMode = Extension.create<object, VimModeStorage>({
                 return true;
 
               case "a": {
-                // "after" — enter insert mode one position ahead
-                // Must set mode BEFORE moving so appendTransaction doesn't clamp
-                setMode("insert");
+                // "after" — insert after current character
                 const aPos = Math.min(from + 1, $from.end($from.depth));
-                view.dispatch(state.tr.setSelection(TextSelection.create(doc, aPos)));
+                vimDispatch(view, state.tr.setSelection(TextSelection.create(doc, aPos)));
+                setMode("insert");
                 return true;
               }
 
@@ -322,15 +331,16 @@ export const VimMode = Extension.create<object, VimModeStorage>({
               }
 
               case "A": {
+                // Append at end of line
+                vimDispatch(view, state.tr.setSelection(TextSelection.create(doc, $from.end($from.depth))));
                 setMode("insert");
-                view.dispatch(state.tr.setSelection(TextSelection.create(doc, $from.end($from.depth))));
                 return true;
               }
 
               case "o": {
-                // New line below
+                // New line below — move to end of node, split
                 const endOfNode = $from.end($from.depth);
-                view.dispatch(state.tr.setSelection(TextSelection.create(doc, endOfNode)));
+                vimDispatch(view, state.tr.setSelection(TextSelection.create(doc, endOfNode)));
                 editor.commands.splitBlock();
                 setMode("insert");
                 return true;
@@ -343,7 +353,7 @@ export const VimMode = Extension.create<object, VimModeStorage>({
                 const schema = doc.type.schema;
                 const newParagraph = schema.nodes.paragraph.create();
                 const tr = state.tr.insert(before, newParagraph);
-                view.dispatch(tr.setSelection(TextSelection.create(tr.doc, startOfNode)));
+                vimDispatch(view, tr.setSelection(TextSelection.create(tr.doc, startOfNode)));
                 setMode("insert");
                 return true;
               }
