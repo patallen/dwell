@@ -1,4 +1,4 @@
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, type Editor as TiptapEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { OpenQuestion } from "../extensions/openQuestion";
@@ -19,12 +19,14 @@ interface EditorProps {
   onQuestionAction?: (action: QuestionMenuAction) => void;
   placeholder?: string;
   vim?: boolean;
+  onEditorReady?: (editor: TiptapEditor) => void;
 }
 
-export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, placeholder, vim = true }: EditorProps) {
+export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, placeholder, vim = true, onEditorReady }: EditorProps) {
   const [toolbarPos, setToolbarPos] = useState<{ top: number; left: number } | null>(null);
   const [vimMode, setVimMode] = useState<VimModeType>("normal");
   const toolbarRef = useRef<HTMLDivElement>(null);
+  const readyFired = useRef(false);
 
   const vimModeRef = useRef<VimModeType>(vim ? "normal" : "insert");
 
@@ -85,6 +87,13 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
       },
     },
   });
+
+  useEffect(() => {
+    if (editor && !readyFired.current) {
+      readyFired.current = true;
+      onEditorReady?.(editor);
+    }
+  }, [editor, onEditorReady]);
 
   // Wire up vim mode change callback via ref to avoid hook immutability lint
   const vimCallbackRef = useRef<(mode: VimModeType) => void>(undefined);

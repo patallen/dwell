@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import type { Editor as TiptapEditor } from "@tiptap/react";
 import type { Note, Task, Question } from "../api";
 import {
   fetchNote, updateNote, fetchNoteTasks, fetchNoteQuestions,
@@ -7,6 +8,7 @@ import {
 } from "../api";
 import Editor from "./Editor";
 import type { QuestionMenuAction } from "./Editor";
+import { useEditorState } from "../hooks/useEditorState";
 
 interface NoteViewProps {
   noteId: string;
@@ -42,6 +44,24 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
   const [showTasks, setShowTasks] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const editorRef = useRef<TiptapEditor | null>(null);
+  const editorState = useEditorState(noteId);
+
+  const handleEditorReady = useCallback((editor: TiptapEditor) => {
+    editorRef.current = editor;
+    editorState.restore(editor);
+    editor.on('selectionUpdate', () => {
+      editorState.save(editor);
+    });
+  }, [editorState]);
+
+  useEffect(() => {
+    return () => {
+      if (editorRef.current) {
+        editorState.flush(editorRef.current);
+      }
+    };
+  }, [noteId, editorState]);
 
   useEffect(() => {
     Promise.all([
@@ -306,6 +326,7 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
             onQuestionAction={handleQuestionAction}
             placeholder="Think here..."
             vim
+            onEditorReady={handleEditorReady}
           />
 
           {/* Inline question context menu */}
