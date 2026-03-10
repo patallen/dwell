@@ -25,7 +25,7 @@ import { useBodyPrompts } from "./hooks/useBodyPrompts";
 import type { PromptType } from "./hooks/useBodyPrompts";
 import { useSessionTimer } from "./hooks/useSessionTimer";
 
-const LAST_SEEN_KEY = "adhdeez:lastSeen";
+const LAST_SEEN_KEY = "dwell:lastSeen";
 const COLD_START_HOURS = 4;
 
 function isColdStart(): boolean {

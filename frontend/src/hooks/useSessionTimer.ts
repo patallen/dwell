@@ -12,7 +12,7 @@ const DEFAULT_CONFIG: SessionTimerConfig = {
   snoozeMinutes: 30,
 };
 
-const STORAGE_KEY = "adhdeez:sessionTimer";
+const STORAGE_KEY = "dwell:sessionTimer";
 const IDLE_DECAY_MS = 5 * 60000; // 5 min of no input resets active time
 const IDLE_THRESHOLD_MS = 2000; // 2s pause before showing wave (don't interrupt typing)
 const AUTO_FADE_MS = 30000; // auto-dismiss after 30s

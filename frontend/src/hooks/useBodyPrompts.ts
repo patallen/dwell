@@ -19,8 +19,8 @@ const DEFAULT_CONFIG: BodyPromptConfig = {
   snoozeMinutes: 15,
 };
 
-const STORAGE_KEY = "adhdeez:bodyPrompts";
-const TIMESTAMPS_KEY = "adhdeez:bodyPrompts:timestamps";
+const STORAGE_KEY = "dwell:bodyPrompts";
+const TIMESTAMPS_KEY = "dwell:bodyPrompts:timestamps";
 
 function loadConfig(): BodyPromptConfig {
   try {
