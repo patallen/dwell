@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import type { Note, Task, Question } from "../api";
 import {
   fetchNote, updateNote, fetchNoteTasks, fetchNoteQuestions,
   createTask, updateTask, deleteTask,
   createQuestion, updateQuestion, deleteQuestion,
+  pushContext,
 } from "../api";
 import Editor from "./Editor";
 import type { QuestionMenuAction } from "./Editor";
@@ -31,6 +33,7 @@ function statusColor(s: string) {
 }
 
 export default function NoteView({ noteId, onBack }: NoteViewProps) {
+  const navigate = useNavigate();
   const [note, setNote] = useState<Note | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -160,6 +163,11 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
     setQuestions(await fetchNoteQuestions(noteId));
   };
 
+  const handleFocusQuestion = async (q: Question) => {
+    await pushContext(q.id, "question", "researching");
+    navigate("/");
+  };
+
   if (!note) return null;
 
   const openTasks = tasks.filter(t => t.status === "open");
@@ -267,7 +275,7 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
         <div className="mb-4">
           <div className="flex flex-col gap-1.5">
             {openQuestions.map(q => (
-              <QuestionRow key={q.id} question={q} onAnswer={handleAnswerQuestion} onDelete={handleDeleteQuestion} />
+              <QuestionRow key={q.id} question={q} onAnswer={handleAnswerQuestion} onDelete={handleDeleteQuestion} onFocus={handleFocusQuestion} />
             ))}
           </div>
         </div>
@@ -413,10 +421,11 @@ function TaskRow({ task: t, onToggle, onEdit, onDelete }: {
   );
 }
 
-function QuestionRow({ question: q, onAnswer, onDelete }: {
+function QuestionRow({ question: q, onAnswer, onDelete, onFocus }: {
   question: Question;
   onAnswer: (q: Question, answer: string) => void;
   onDelete: (q: Question) => void;
+  onFocus?: (q: Question) => void;
 }) {
   const [answering, setAnswering] = useState(false);
   const [text, setText] = useState("");
@@ -442,10 +451,18 @@ function QuestionRow({ question: q, onAnswer, onDelete }: {
             <button onClick={submit} className="text-xs text-success hover:text-success/80">save</button>
           </div>
         ) : (
-          <button onClick={() => setAnswering(true)}
-            className="text-[10px] text-text-muted hover:text-text-secondary mt-0.5">
-            answer
-          </button>
+          <div className="flex gap-2 mt-0.5">
+            <button onClick={() => setAnswering(true)}
+              className="text-[10px] text-text-muted hover:text-text-secondary">
+              answer
+            </button>
+            {onFocus && (
+              <button onClick={() => onFocus(q)}
+                className="text-[10px] text-text-muted hover:text-accent">
+                focus
+              </button>
+            )}
+          </div>
         )}
       </div>
       <button onClick={() => onDelete(q)}

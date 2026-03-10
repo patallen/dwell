@@ -6,6 +6,7 @@ import {
   fetchContext,
   fetchTasks,
   fetchNotes,
+  fetchQuestions,
   createTask,
   createNote,
   updateTask,
@@ -16,6 +17,7 @@ import {
 } from "./api";
 import type { ContextEntry } from "./api";
 import NoteView from "./components/NoteView";
+import QuestionFocusView from "./components/QuestionFocusView";
 import WhereWasI from "./components/WhereWasI";
 import NoteToSelf from "./components/NoteToSelf";
 import AmbientPulse from "./components/AmbientPulse";
@@ -74,7 +76,7 @@ function App() {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [captureText, setCaptureText] = useState("");
   const [findText, setFindText] = useState("");
-  const [findResults, setFindResults] = useState<{ type: "task" | "note"; id: string; title: string; status: string }[]>([]);
+  const [findResults, setFindResults] = useState<{ type: "task" | "note" | "question"; id: string; title: string; status: string }[]>([]);
   const [stackItems, setStackItems] = useState<ContextEntry[]>([]);
   const [noteList, setNoteList] = useState<Note[]>([]);
   const [showWhereWasI, setShowWhereWasI] = useState(false);
@@ -152,7 +154,7 @@ function App() {
       setShowWhereWasI(false);
       void setContextMemo("");
     }
-    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.note)) {
+    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.note || focus.question)) {
       setPendingAction(action);
     } else {
       void executeAction(action);
@@ -194,22 +196,29 @@ function App() {
   const handleFind = async (query: string) => {
     setFindText(query);
     if (!query.trim()) { setFindResults([]); return; }
-    const [tasks, notes] = await Promise.all([
+    const [tasks, notes, questions] = await Promise.all([
       fetchTasks({ search: query.trim() }),
       fetchNotes({ search: query.trim() }),
+      fetchQuestions({ search: query.trim() }),
     ]);
     setFindResults([
       ...notes.map(n => ({ type: "note" as const, id: n.id, title: n.title, status: n.status })),
       ...tasks.map(t => ({ type: "task" as const, id: t.id, title: t.title, status: t.status })),
+      ...questions.map(q => ({ type: "question" as const, id: q.id, title: q.question, status: q.status })),
     ]);
   };
 
-  const handleFindSelect = (result: { type: "task" | "note"; id: string }) => {
+  const handleFindSelect = (result: { type: "task" | "note" | "question"; id: string }) => {
     setOverlay(null);
     setFindText("");
     setFindResults([]);
     if (result.type === "note") {
       navigate(`/note/${result.id}`);
+      return;
+    }
+    if (result.type === "question") {
+      initiateAction({ type: "push", refId: result.id, refType: "question", reason: "researching" });
+      navigate("/");
       return;
     }
     initiateAction({ type: "push", refId: result.id, refType: result.type, reason: "picked from search" });
@@ -291,7 +300,7 @@ function App() {
                   {findResults.map(r => (
                     <li key={`${r.type}-${r.id}`} onClick={() => void handleFindSelect(r)}
                       className="flex items-center gap-3 px-1.5 py-2 rounded-lg text-sm cursor-pointer text-text hover:bg-surface">
-                      <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.type === "note" ? "bg-accent/15 text-accent-dim" : "bg-background text-text-muted"}`}>{r.type}</span>
+                      <span className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${r.type === "note" ? "bg-accent/15 text-accent-dim" : r.type === "question" ? "bg-warn/15 text-warn" : "bg-background text-text-muted"}`}>{r.type === "question" ? "?" : r.type}</span>
                       <span>{r.title}</span>
                       <span className="ml-auto text-xs uppercase tracking-wider text-text-muted">{r.status}</span>
                     </li>
@@ -466,7 +475,7 @@ function App() {
       {/* Note to self prompt */}
       {pendingAction && (
         <NoteToSelf
-          taskTitle={focus?.task?.title || focus?.note?.title || "current task"}
+          taskTitle={focus?.task?.title || focus?.note?.title || focus?.question?.question || "current task"}
           onSubmit={(memo) => {
             setPendingAction(null);
             void executeAction(pendingAction, memo);
@@ -506,11 +515,21 @@ function App() {
                 </div>
               )}
 
+              {/* Focused question */}
+              {focus?.state === "focused" && focus.question && (
+                <QuestionFocusView
+                  questionId={focus.question.id}
+                  parentNoteId={focus.question.note_id}
+                  onPop={() => void popContext().then(applyFocus)}
+                  onNavigateToNote={(noteId) => navigate(`/note/${noteId}`)}
+                />
+              )}
+
               {/* Focused + suggestions */}
               {(focus?.state === "focused" || focus?.state === "suggesting") && (
                 <div className="w-full max-w-xl flex flex-col gap-6">
                   {/* Current focus */}
-                  {focus.state === "focused" && (task || focus.note) && (
+                  {focus.state === "focused" && !focus.question && (task || focus.note) && (
                     <div>
                       <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">Working on</p>
                       <div
@@ -623,14 +642,16 @@ function App() {
           <span
             className="text-text-secondary truncate max-w-[200px] cursor-pointer hover:text-text transition-colors"
             onClick={() => {
-              if (focus.context?.type === "note" && focus.note) {
+              if (focus.context?.type === "question") {
+                void popContext().then(applyFocus);
+              } else if (focus.context?.type === "note" && focus.note) {
                 navigate(`/note/${focus.note.id}`);
               } else {
                 navigate("/");
               }
             }}
           >
-            {focus.task?.title || focus.note?.title}
+            {focus.task?.title || focus.note?.title || (focus.question ? focus.question.question.slice(0, 40) + (focus.question.question.length > 40 ? "..." : "") : undefined)}
           </span>
         )}
         {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (

@@ -228,6 +228,11 @@ export async function deleteTask(id: string): Promise<void> {
 
 // --- Questions ---
 
+export async function fetchQuestion(id: string): Promise<Question> {
+  const res = await fetch(`${API}/questions/${id}`);
+  return res.json();
+}
+
 export async function fetchQuestions(params?: Record<string, string>): Promise<Question[]> {
   const url = new URL(`${API}/questions`);
   if (params) {

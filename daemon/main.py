@@ -396,14 +396,25 @@ def delete_task(task_id: str):
 
 
 @app.get("/questions")
-def list_questions(note_id: str | None = None, status: str | None = None):
+def list_questions(note_id: str | None = None, status: str | None = None, search: str | None = None):
     if note_id:
         results = store.note_questions(note_id)
     else:
         results = list(store.questions.values())
     if status:
         results = [q for q in results if q.status == status]
+    if search:
+        needle = search.lower()
+        results = [q for q in results if needle in q.question.lower() or needle in (q.notes or "").lower()]
     return [asdict(q) for q in results]
+
+
+@app.get("/questions/{question_id}")
+def get_question(question_id: str):
+    q = store.get_question(question_id)
+    if not q:
+        raise HTTPException(404, "not found")
+    return asdict(q)
 
 
 @app.post("/questions")
