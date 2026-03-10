@@ -17,7 +17,6 @@ import {
 } from "./api";
 import type { ContextEntry } from "./api";
 import NoteView from "./components/NoteView";
-import QuestionFocusView from "./components/QuestionFocusView";
 import WhereWasI from "./components/WhereWasI";
 import NoteToSelf from "./components/NoteToSelf";
 import AmbientPulse from "./components/AmbientPulse";
@@ -76,7 +75,7 @@ function App() {
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [captureText, setCaptureText] = useState("");
   const [findText, setFindText] = useState("");
-  const [findResults, setFindResults] = useState<{ type: "task" | "note" | "question"; id: string; title: string; status: string }[]>([]);
+  const [findResults, setFindResults] = useState<{ type: "task" | "note" | "question"; id: string; title: string; status: string; noteId?: string }[]>([]);
   const [stackItems, setStackItems] = useState<ContextEntry[]>([]);
   const [noteList, setNoteList] = useState<Note[]>([]);
   const [showWhereWasI, setShowWhereWasI] = useState(false);
@@ -154,7 +153,7 @@ function App() {
       setShowWhereWasI(false);
       void setContextMemo("");
     }
-    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.note || focus.question)) {
+    if (action.type === "push" && focus?.state === "focused" && (focus.task || focus.note)) {
       setPendingAction(action);
     } else {
       void executeAction(action);
@@ -204,11 +203,11 @@ function App() {
     setFindResults([
       ...notes.map(n => ({ type: "note" as const, id: n.id, title: n.title, status: n.status })),
       ...tasks.map(t => ({ type: "task" as const, id: t.id, title: t.title, status: t.status })),
-      ...questions.map(q => ({ type: "question" as const, id: q.id, title: q.question, status: q.status })),
+      ...questions.map(q => ({ type: "question" as const, id: q.id, title: q.question, status: q.status, noteId: q.note_id ?? undefined })),
     ]);
   };
 
-  const handleFindSelect = (result: { type: "task" | "note" | "question"; id: string }) => {
+  const handleFindSelect = (result: { type: "task" | "note" | "question"; id: string; noteId?: string }) => {
     setOverlay(null);
     setFindText("");
     setFindResults([]);
@@ -216,9 +215,8 @@ function App() {
       navigate(`/note/${result.id}`);
       return;
     }
-    if (result.type === "question") {
-      initiateAction({ type: "push", refId: result.id, refType: "question", reason: "researching" });
-      navigate("/");
+    if (result.type === "question" && result.noteId) {
+      navigate(`/note/${result.noteId}`);
       return;
     }
     initiateAction({ type: "push", refId: result.id, refType: result.type, reason: "picked from search" });
@@ -475,7 +473,7 @@ function App() {
       {/* Note to self prompt */}
       {pendingAction && (
         <NoteToSelf
-          taskTitle={focus?.task?.title || focus?.note?.title || focus?.question?.question || "current task"}
+          taskTitle={focus?.task?.title || focus?.note?.title || "current task"}
           onSubmit={(memo) => {
             setPendingAction(null);
             void executeAction(pendingAction, memo);
@@ -515,21 +513,11 @@ function App() {
                 </div>
               )}
 
-              {/* Focused question */}
-              {focus?.state === "focused" && focus.question && (
-                <QuestionFocusView
-                  questionId={focus.question.id}
-                  parentNoteId={focus.question.note_id}
-                  onPop={() => void popContext().then(applyFocus)}
-                  onNavigateToNote={(noteId) => navigate(`/note/${noteId}`)}
-                />
-              )}
-
               {/* Focused + suggestions */}
               {(focus?.state === "focused" || focus?.state === "suggesting") && (
                 <div className="w-full max-w-xl flex flex-col gap-6">
                   {/* Current focus */}
-                  {focus.state === "focused" && !focus.question && (task || focus.note) && (
+                  {focus.state === "focused" && (task || focus.note) && (
                     <div>
                       <p className="text-xs uppercase tracking-widest text-text-muted font-semibold mb-3">Working on</p>
                       <div
@@ -642,16 +630,14 @@ function App() {
           <span
             className="text-text-secondary truncate max-w-[200px] cursor-pointer hover:text-text transition-colors"
             onClick={() => {
-              if (focus.context?.type === "question") {
-                void popContext().then(applyFocus);
-              } else if (focus.context?.type === "note" && focus.note) {
+              if (focus.context?.type === "note" && focus.note) {
                 navigate(`/note/${focus.note.id}`);
               } else {
                 navigate("/");
               }
             }}
           >
-            {focus.task?.title || focus.note?.title || (focus.question ? focus.question.question.slice(0, 40) + (focus.question.question.length > 40 ? "..." : "") : undefined)}
+            {focus.task?.title || focus.note?.title}
           </span>
         )}
         {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (

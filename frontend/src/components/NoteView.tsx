@@ -1,11 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import type { Note, Task, Question } from "../api";
 import {
   fetchNote, updateNote, fetchNoteTasks, fetchNoteQuestions,
   createTask, updateTask, deleteTask,
   createQuestion, updateQuestion, deleteQuestion,
-  pushContext,
 } from "../api";
 import Editor from "./Editor";
 import type { QuestionMenuAction } from "./Editor";
@@ -33,7 +31,6 @@ function statusColor(s: string) {
 }
 
 export default function NoteView({ noteId, onBack }: NoteViewProps) {
-  const navigate = useNavigate();
   const [note, setNote] = useState<Note | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -163,11 +160,6 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
     setQuestions(await fetchNoteQuestions(noteId));
   };
 
-  const handleFocusQuestion = async (q: Question) => {
-    await pushContext(q.id, "question", "researching");
-    navigate("/");
-  };
-
   if (!note) return null;
 
   const openTasks = tasks.filter(t => t.status === "open");
@@ -179,7 +171,7 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
   return (
     <div className="w-full max-w-3xl mx-auto">
       {/* Header bar — type + title + status */}
-      <div className="flex items-center gap-3 mb-1">
+      <div className="flex items-center gap-3 mb-4">
         <button onClick={onBack} className="text-text-muted hover:text-text-secondary text-sm shrink-0">
           ←
         </button>
@@ -275,7 +267,7 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
         <div className="mb-4">
           <div className="flex flex-col gap-1.5">
             {openQuestions.map(q => (
-              <QuestionRow key={q.id} question={q} onAnswer={handleAnswerQuestion} onDelete={handleDeleteQuestion} onFocus={handleFocusQuestion} />
+              <QuestionRow key={q.id} question={q} onAnswer={handleAnswerQuestion} onDelete={handleDeleteQuestion} />
             ))}
           </div>
         </div>
@@ -421,11 +413,10 @@ function TaskRow({ task: t, onToggle, onEdit, onDelete }: {
   );
 }
 
-function QuestionRow({ question: q, onAnswer, onDelete, onFocus }: {
+function QuestionRow({ question: q, onAnswer, onDelete }: {
   question: Question;
   onAnswer: (q: Question, answer: string) => void;
   onDelete: (q: Question) => void;
-  onFocus?: (q: Question) => void;
 }) {
   const [answering, setAnswering] = useState(false);
   const [text, setText] = useState("");
@@ -456,12 +447,6 @@ function QuestionRow({ question: q, onAnswer, onDelete, onFocus }: {
               className="text-[10px] text-text-muted hover:text-text-secondary">
               answer
             </button>
-            {onFocus && (
-              <button onClick={() => onFocus(q)}
-                className="text-[10px] text-text-muted hover:text-accent">
-                focus
-              </button>
-            )}
           </div>
         )}
       </div>
