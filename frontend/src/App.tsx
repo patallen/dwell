@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import {
   setContextMemo,
 } from "./api";
@@ -37,7 +37,6 @@ function App() {
   const bodyPrompts = useBodyPrompts();
   const sessionTimer = useSessionTimer();
   const activeThreadCount = useActiveThreadCount();
-  const navigate = useNavigate();
   const location = useLocation();
 
   const isNoteView = location.pathname.startsWith("/note/");

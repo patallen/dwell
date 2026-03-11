@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import type { FocusManager } from "../hooks/useFocusManager";
 
-export function loeDot(loe: string | null) {
+function loeDot(loe: string | null) {
   if (loe === "hot") return "bg-urgent shadow-[0_0_6px_rgba(248,113,113,0.5)]";
   if (loe === "warm") return "bg-warn";
   if (loe === "cool") return "bg-info";

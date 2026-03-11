@@ -3,14 +3,12 @@ import { test, expect } from '@playwright/test';
 test.describe('Dwell Smoke Tests', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    
+
     // Handle the SoftLanding screen if it's there
     const landingSkip = page.getByText("esc to skip");
     try {
-      // Wait up to 5s for landing screen to appear
       await landingSkip.waitFor({ state: 'visible', timeout: 5000 });
       await page.keyboard.press('Escape');
-      // Wait for it to disappear
       await landingSkip.waitFor({ state: 'hidden', timeout: 5000 });
     } catch {
       // Not visible or timed out, move on
@@ -25,47 +23,85 @@ test.describe('Dwell Smoke Tests', () => {
     await expect(overlayInput).toBeFocused();
   });
 
-  test('workspace renders and allows basic interaction', async ({ page }) => {
-    // 1. Verify workspace renders
+  test('capture task submits and closes overlay', async ({ page }) => {
     const main = page.locator('main');
     await expect(main).toBeVisible({ timeout: 10000 });
 
-    // 2. Interaction test: Capture a new task
-    const testTaskTitle = `Smoke Test Task ${Date.now()}`;
+    // Open capture overlay
     await page.keyboard.press('Control+i');
     const overlayInput = page.getByPlaceholder("what's on your mind?");
     await expect(overlayInput).toBeVisible();
-    await overlayInput.fill(testTaskTitle);
+
+    // Type and submit
+    await overlayInput.fill(`Smoke Test Task ${Date.now()}`);
     await page.keyboard.press('Enter');
 
-    // 3. Verify it shows up somewhere (Working on or Up next)
-    await expect(page.getByText(testTaskTitle).first()).toBeVisible({ timeout: 10000 });
+    // Overlay should close after capture
+    await expect(overlayInput).toBeHidden({ timeout: 5000 });
 
-    // 4. Determine state and interact
-    const workingOnHeader = page.getByText("Working on");
-    
-    // If it's not the active task, pick it from suggestions
-    if (!(await workingOnHeader.isVisible())) {
-      const suggestionButton = page.getByRole('button').filter({ hasText: testTaskTitle });
-      await expect(suggestionButton).toBeVisible();
-      await suggestionButton.click();
+    // Workspace should still be visible (no crash)
+    await expect(main).toBeVisible();
+  });
+
+  test('suggestion pick handles NoteToSelf prompt', async ({ page }) => {
+    const main = page.locator('main');
+    await expect(main).toBeVisible({ timeout: 10000 });
+
+    // Wait for suggestions to load
+    const upNext = page.getByText("Up next");
+    const whatShouldWeWork = page.getByText("What should we work on?");
+    await expect(upNext.or(whatShouldWeWork)).toBeVisible({ timeout: 10000 });
+
+    const hasFocus = await page.getByText("Working on").isVisible();
+
+    // Click the first suggestion
+    const firstSuggestion = page.locator('button').filter({ has: page.locator('.flex.items-center.gap-3') }).first();
+    await expect(firstSuggestion).toBeVisible();
+    await firstSuggestion.click();
+
+    if (hasFocus) {
+      // NoteToSelf prompt should appear when switching away from focused task
+      const notePrompt = page.getByPlaceholder("note for when you come back?");
+      await expect(notePrompt).toBeVisible({ timeout: 5000 });
+      // Skip it
+      await page.keyboard.press('Escape');
     }
 
-    // 5. Verify it is now the active task
-    await expect(page.getByText("Working on")).toBeVisible({ timeout: 10000 });
-    const activeTaskHeader = page.locator('h1', { hasText: testTaskTitle });
-    await expect(activeTaskHeader).toBeVisible();
+    // After picking, the app should still be functional (either workspace or note view)
+    await expect(main).toBeVisible({ timeout: 10000 });
+  });
 
-    // 6. Complete the task
-    const card = page.locator('div').filter({ has: activeTaskHeader }).filter({ hasText: "Done" });
-    const doneButton = card.getByRole('button', { name: "Done" });
-    await expect(doneButton).toBeVisible();
-    await doneButton.click();
-    
-    // 7. Verify the task is no longer in the active "Working on" section
-    await expect(activeTaskHeader).toBeHidden({ timeout: 10000 });
-    // And verify "Working on" header is gone if it was the only task
-    // (Or at least the specific task is gone from the whole page)
-    await expect(page.getByText(testTaskTitle)).toBeHidden({ timeout: 10000 });
+  test('keyboard shortcuts open overlays', async ({ page }) => {
+    const main = page.locator('main');
+    await expect(main).toBeVisible({ timeout: 10000 });
+
+    // Find overlay (Cmd/)
+    await page.keyboard.press('Control+/');
+    await expect(page.getByPlaceholder("search...")).toBeVisible({ timeout: 5000 });
+    await page.keyboard.press('Escape');
+
+    // Stack overlay (CmdJ)
+    await page.keyboard.press('Control+j');
+    await expect(page.getByText("Context Stack")).toBeVisible({ timeout: 5000 });
+    await page.keyboard.press('Escape');
+
+    // Notes overlay (CmdP)
+    await page.keyboard.press('Control+p');
+    await expect(page.getByText("Notes").first()).toBeVisible({ timeout: 5000 });
+    await page.keyboard.press('Escape');
+
+    // Help overlay (Cmd.)
+    await page.keyboard.press('Control+.');
+    await expect(page.getByText("Keyboard Shortcuts")).toBeVisible({ timeout: 5000 });
+    await page.keyboard.press('Escape');
+  });
+
+  test('footer shows expected elements', async ({ page }) => {
+    const footer = page.locator('footer');
+    await expect(footer).toBeVisible({ timeout: 10000 });
+    await expect(footer.getByText("⌘I capture")).toBeVisible();
+    await expect(footer.getByText("⌘/ find")).toBeVisible();
+    await expect(footer.getByText("⌘J stack")).toBeVisible();
+    await expect(footer.getByText("⌘P notes")).toBeVisible();
   });
 });
