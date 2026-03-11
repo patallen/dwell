@@ -1,8 +1,6 @@
 import { useEffect } from "react";
 import { Routes, Route, useLocation } from "react-router-dom";
-import {
-  setContextMemo,
-} from "./api";
+import { setContextMemo } from "./api";
 import NoteRoute from "./components/NoteRoute";
 import WhereWasI from "./components/WhereWasI";
 import NoteToSelf from "./components/NoteToSelf";
@@ -10,12 +8,17 @@ import SoftLanding from "./components/SoftLanding";
 import GentleWave from "./components/GentleWave";
 import Workspace from "./components/Workspace";
 import AppFooter from "./components/AppFooter";
+import CaptureOverlay from "./components/CaptureOverlay";
+import FindOverlay from "./components/FindOverlay";
+import StackOverlay from "./components/StackOverlay";
+import NotesOverlay from "./components/NotesOverlay";
+import HelpOverlay from "./components/HelpOverlay";
+import SettingsOverlay from "./components/SettingsOverlay";
 import { useBodyPrompts } from "./hooks/useBodyPrompts";
 import { useSessionTimer } from "./hooks/useSessionTimer";
-import { useOverlayManager } from "./hooks/useOverlayManager";
+import { useOverlay } from "./hooks/useOverlayManager";
 import { useFocusManager } from "./hooks/useFocusManager";
 import { useAppShortcuts } from "./hooks/useAppShortcuts";
-import AppOverlays from "./components/AppOverlays";
 import { initSSE, stopSSE } from "./sse";
 import { useActiveThreadCount } from "./store";
 
@@ -33,18 +36,18 @@ function App() {
     setPendingAction,
     setShowWhereWasI,
   } = focusManager;
-  
+
   const bodyPrompts = useBodyPrompts();
   const sessionTimer = useSessionTimer();
   const activeThreadCount = useActiveThreadCount();
   const location = useLocation();
+  const overlayState = useOverlay();
+  const { overlay, close } = overlayState;
 
   const isNoteView = location.pathname.startsWith("/note/");
 
-  const overlayManager = useOverlayManager(refresh, initiateAction);
-  useAppShortcuts(overlayManager, focusManager, isNoteView);
+  useAppShortcuts(overlayState, focusManager, isNoteView);
 
-  // Init SSE — onopen re-seeds store with notes
   useEffect(() => {
     initSSE();
     return () => stopSSE();
@@ -56,13 +59,13 @@ function App() {
 
   return (
     <div className="h-dvh flex flex-col bg-background font-sans text-text antialiased">
-      <AppOverlays
-        overlayManager={overlayManager}
-        bodyPrompts={bodyPrompts}
-        sessionTimer={sessionTimer}
-      />
+      {overlay === "capture" && <CaptureOverlay onClose={close} onCaptured={refresh} />}
+      {overlay === "find" && <FindOverlay onClose={close} onAction={initiateAction} />}
+      {overlay === "stack" && <StackOverlay onClose={close} onRefresh={refresh} />}
+      {overlay === "notes" && <NotesOverlay onClose={close} />}
+      {overlay === "help" && <HelpOverlay onClose={close} />}
+      {overlay === "settings" && <SettingsOverlay onClose={close} bodyPrompts={bodyPrompts} sessionTimer={sessionTimer} />}
 
-      {/* Note to self prompt */}
       {pendingAction && (
         <NoteToSelf
           taskTitle={focus?.task?.title || focus?.note?.title || "current task"}
@@ -77,7 +80,6 @@ function App() {
         />
       )}
 
-      {/* Where Was I restoration card */}
       {showWhereWasI && !pendingAction && focus?.state === "focused" && (
         <WhereWasI
           focus={focus}
@@ -88,7 +90,6 @@ function App() {
         />
       )}
 
-      {/* Main */}
       <main className={`flex-1 flex ${isNoteView ? "items-start" : focus?.state === "empty" ? "items-center" : "items-start"} justify-center p-6 sm:p-10 overflow-y-auto`}>
         <Routes>
           <Route path="/note/:noteId" element={<NoteRoute />} />
@@ -96,8 +97,7 @@ function App() {
         </Routes>
       </main>
 
-      {/* Session guardrail */}
-      {sessionTimer.showWave && !overlayManager.overlay && !pendingAction && (
+      {sessionTimer.showWave && !overlay && !pendingAction && (
         <GentleWave
           minutes={sessionTimer.sessionMinutes}
           onDismiss={sessionTimer.dismiss}
@@ -105,7 +105,6 @@ function App() {
         />
       )}
 
-      {/* Footer */}
       <AppFooter
         focus={focus}
         activeThreadCount={activeThreadCount}
