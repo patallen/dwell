@@ -1,10 +1,12 @@
+import asyncio
 import json
 import os
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -21,10 +23,53 @@ app = FastAPI(title="adhdeez")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "tauri://localhost"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "tauri://localhost"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- SSE ---
+
+sse_clients: set[asyncio.Queue] = set()
+active_ai_tasks: dict[str, asyncio.Task] = {}
+
+
+async def broadcast(event_type: str, data: dict):
+    payload = f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
+    disconnected = []
+    for q in sse_clients:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            disconnected.append(q)
+    for q in disconnected:
+        sse_clients.discard(q)
+
+
+async def _sse_generator(queue: asyncio.Queue, request: Request):
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=30.0)
+                yield msg
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+    finally:
+        sse_clients.discard(queue)
+
+
+@app.get("/events")
+async def sse_events(request: Request):
+    queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+    sse_clients.add(queue)
+    return StreamingResponse(
+        _sse_generator(queue, request),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # --- Request Models ---
@@ -485,7 +530,7 @@ def list_note_threads(note_id: str):
 
 
 @app.post("/ai-threads")
-def create_ai_thread(req: CreateAiThreadRequest):
+async def create_ai_thread(req: CreateAiThreadRequest):
     thread = AiThread(
         id="",
         note_id=req.note_id,
@@ -497,7 +542,92 @@ def create_ai_thread(req: CreateAiThreadRequest):
         status="streaming",
     )
     created = store.create_thread(thread)
+
+    config = load_ai_config()
+    if is_ai_configured():
+        task = asyncio.create_task(_run_ai_stream(created.id, config))
+        active_ai_tasks[created.id] = task
+    else:
+        created.status = "error"
+        created.response = "AI not configured"
+        store.update_thread(created)
+        await broadcast("thread.updated", asdict(created))
+
     return asdict(created)
+
+
+async def _run_ai_stream(thread_id: str, config: dict):
+    thread = store.get_thread(thread_id)
+    if not thread:
+        return
+    try:
+        messages = build_context_messages(
+            store, thread.note_id, thread.action, thread.prompt,
+            thread.selection_text or None, None,
+        )
+        accumulated = ""
+        last_broadcast = 0.0
+
+        async for chunk_str in stream_completion(config, messages):
+            if not chunk_str.startswith("data: "):
+                continue
+            raw = chunk_str[6:].strip()
+            if not raw:
+                continue
+            try:
+                chunk = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            if chunk.get("type") == "delta":
+                accumulated += chunk["content"]
+                now = time.monotonic()
+                if now - last_broadcast >= 0.1:
+                    thread.response = accumulated
+                    store.update_thread(thread)
+                    await broadcast("thread.updated", asdict(thread))
+                    last_broadcast = now
+            elif chunk.get("type") == "error":
+                thread.status = "error"
+                thread.response = chunk.get("message", "Unknown error")
+                store.update_thread(thread)
+                await broadcast("thread.updated", asdict(thread))
+                return
+
+        thread.response = accumulated
+        thread.status = "ready"
+        store.update_thread(thread)
+        await broadcast("thread.updated", asdict(thread))
+
+    except asyncio.CancelledError:
+        thread.response = accumulated
+        thread.status = "ready"
+        store.update_thread(thread)
+        await broadcast("thread.updated", asdict(thread))
+    except Exception as e:
+        thread = store.get_thread(thread_id)
+        if thread:
+            thread.status = "error"
+            thread.response = str(e)
+            store.update_thread(thread)
+            await broadcast("thread.updated", asdict(thread))
+    finally:
+        active_ai_tasks.pop(thread_id, None)
+
+
+@app.post("/ai-threads/{thread_id}/stop")
+async def stop_ai_thread(thread_id: str):
+    thread = store.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(404, "thread not found")
+    task = active_ai_tasks.get(thread_id)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    return asdict(thread)
 
 
 @app.patch("/ai-threads/{thread_id}")

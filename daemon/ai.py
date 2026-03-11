@@ -61,7 +61,7 @@ def build_context_messages(
         user_parts.append(f"Context around cursor:\n{cursor_context}")
     user_parts.append(prompt)
 
-    messages.append({"role": "user", "content": "\n\n".join(user_parts)})
+    messages.append({"role": "user", "content": "\n\n".join(user_parts) + " /no_think"})
 
     return messages
 

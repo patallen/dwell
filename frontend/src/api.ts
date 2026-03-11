@@ -323,6 +323,11 @@ export async function deleteAiThread(id: string): Promise<void> {
   await fetch(`${API}/ai-threads/${id}`, { method: "DELETE" });
 }
 
+export async function stopAiThread(id: string): Promise<AiThread> {
+  const res = await fetch(`${API}/ai-threads/${id}/stop`, { method: "POST" });
+  return res.json();
+}
+
 // --- AI ---
 
 export interface AiStreamRequest {

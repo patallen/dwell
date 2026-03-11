@@ -25,6 +25,8 @@ import GentleWave from "./components/GentleWave";
 import { useBodyPrompts } from "./hooks/useBodyPrompts";
 import type { PromptType } from "./hooks/useBodyPrompts";
 import { useSessionTimer } from "./hooks/useSessionTimer";
+import { initSSE, stopSSE } from "./sse";
+import { useActiveThreadCount } from "./store";
 
 const LAST_SEEN_KEY = "dwell:lastSeen";
 const COLD_START_HOURS = 4;
@@ -83,6 +85,7 @@ function App() {
   const captureRef = useRef<HTMLInputElement>(null);
   const bodyPrompts = useBodyPrompts();
   const sessionTimer = useSessionTimer();
+  const activeThreadCount = useActiveThreadCount();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -101,6 +104,12 @@ function App() {
     if (showLanding) return;
     fetchFocus(energy ?? undefined).then(applyFocus);
   }, [applyFocus, energy, location.pathname, showLanding]);
+
+  // Init SSE — onopen re-seeds store with notes
+  useEffect(() => {
+    initSSE();
+    return () => stopSSE();
+  }, []);
 
   const handleLanding = useCallback((selected: EnergyLevel) => {
     setEnergy(selected);
@@ -642,6 +651,11 @@ function App() {
         )}
         {focus?.state === "focused" && focus.stack_depth && focus.stack_depth > 1 && (
           <span>{focus.stack_depth - 1} paused</span>
+        )}
+        {activeThreadCount > 0 && (
+          <span className="text-accent animate-pulse">
+            {activeThreadCount} AI active
+          </span>
         )}
         <span className="ml-auto" />
         <span>⌘I capture</span>
