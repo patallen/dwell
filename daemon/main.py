@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -62,7 +62,7 @@ async def _sse_generator(queue: asyncio.Queue, request: Request):
 
 
 @app.get("/events")
-async def sse_events(request: Request):
+def sse_events(request: Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=256)
     sse_clients.add(queue)
     return StreamingResponse(
@@ -251,7 +251,7 @@ def get_context():
 
 
 @app.post("/context/push")
-async def push_context(req: ContextPushRequest):
+def push_context(req: ContextPushRequest, background_tasks: BackgroundTasks):
     if req.memo_for_current:
         store.context_set_memo(req.memo_for_current)
     entry = ContextEntry(
@@ -262,20 +262,20 @@ async def push_context(req: ContextPushRequest):
     )
     store.context_push(entry)
     focus = get_focus()
-    await broadcast("focus.updated", focus)
+    background_tasks.add_task(broadcast, "focus.updated", focus)
     return focus
 
 
 @app.post("/context/memo")
-async def set_context_memo(req: ContextMemoRequest):
+def set_context_memo(req: ContextMemoRequest, background_tasks: BackgroundTasks):
     store.context_set_memo(req.memo)
     focus = get_focus()
-    await broadcast("focus.updated", focus)
+    background_tasks.add_task(broadcast, "focus.updated", focus)
     return focus
 
 
 @app.post("/context/pop")
-async def pop_context():
+def pop_context(background_tasks: BackgroundTasks):
     popped = store.context_pop()
     focus = get_focus()
     if popped:
@@ -285,15 +285,15 @@ async def pop_context():
             "reason": popped.reason,
             "memo": popped.memo,
         }
-    await broadcast("focus.updated", focus)
+    background_tasks.add_task(broadcast, "focus.updated", focus)
     return focus
 
 
 @app.delete("/context/{ref_id}")
-async def remove_context(ref_id: str):
+def remove_context(ref_id: str, background_tasks: BackgroundTasks):
     store.context_remove(ref_id)
     focus = get_focus()
-    await broadcast("focus.updated", focus)
+    background_tasks.add_task(broadcast, "focus.updated", focus)
     return focus
 
 
@@ -341,7 +341,7 @@ def get_note_questions(note_id: str):
 
 
 @app.post("/notes")
-async def create_note(req: CreateNoteRequest):
+def create_note(req: CreateNoteRequest, background_tasks: BackgroundTasks):
     deadline = None
     if req.deadline:
         try:
@@ -358,12 +358,13 @@ async def create_note(req: CreateNoteRequest):
         deadline=deadline,
     )
     created = store.create_note(note)
-    await broadcast("note.created", asdict(created))
+    background_tasks.add_task(broadcast, "note.created", asdict(created))
+    background_tasks.add_task(broadcast, "focus.updated", get_focus())
     return asdict(created)
 
 
 @app.patch("/notes/{note_id}")
-async def update_note(note_id: str, req: UpdateNoteRequest):
+def update_note(note_id: str, req: UpdateNoteRequest, background_tasks: BackgroundTasks):
     note = store.get_note(note_id)
     if not note:
         raise HTTPException(404, "not found")
@@ -383,15 +384,16 @@ async def update_note(note_id: str, req: UpdateNoteRequest):
         except ValueError:
             raise HTTPException(400, "invalid deadline format")
     updated = store.update_note(note)
-    await broadcast("note.updated", asdict(updated))
+    background_tasks.add_task(broadcast, "note.updated", asdict(updated))
+    background_tasks.add_task(broadcast, "focus.updated", get_focus())
     return asdict(updated)
 
 
 @app.delete("/notes/{note_id}")
-async def delete_note(note_id: str):
+def delete_note(note_id: str, background_tasks: BackgroundTasks):
     if not store.delete_note(note_id):
         raise HTTPException(404, "not found")
-    await broadcast("note.deleted", {"id": note_id})
+    background_tasks.add_task(broadcast, "note.deleted", {"id": note_id})
     return {"ok": True}
 
 
@@ -418,7 +420,7 @@ def get_task(task_id: str):
 
 
 @app.post("/tasks")
-async def create_task(req: CreateTaskRequest):
+def create_task(req: CreateTaskRequest, background_tasks: BackgroundTasks):
     deadline = None
     if req.deadline:
         try:
@@ -435,12 +437,12 @@ async def create_task(req: CreateTaskRequest):
         note_id=req.note_id,
     )
     created = store.create_task(task)
-    await broadcast("task.created", asdict(created))
+    background_tasks.add_task(broadcast, "task.created", asdict(created))
     return asdict(created)
 
 
 @app.patch("/tasks/{task_id}")
-async def update_task(task_id: str, req: UpdateTaskRequest):
+def update_task(task_id: str, req: UpdateTaskRequest, background_tasks: BackgroundTasks):
     task = store.get_task(task_id)
     if not task:
         raise HTTPException(404, "not found")
@@ -464,15 +466,15 @@ async def update_task(task_id: str, req: UpdateTaskRequest):
     if req.note_id is not None:
         task.note_id = req.note_id
     updated = store.update_task(task)
-    await broadcast("task.updated", asdict(updated))
+    background_tasks.add_task(broadcast, "task.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/tasks/{task_id}")
-async def delete_task(task_id: str):
+def delete_task(task_id: str, background_tasks: BackgroundTasks):
     if not store.delete_task(task_id):
         raise HTTPException(404, "not found")
-    await broadcast("task.deleted", {"id": task_id})
+    background_tasks.add_task(broadcast, "task.deleted", {"id": task_id})
     return {"ok": True}
 
 
@@ -502,15 +504,15 @@ def get_question(question_id: str):
 
 
 @app.post("/questions")
-async def create_question(req: CreateQuestionRequest):
+def create_question(req: CreateQuestionRequest, background_tasks: BackgroundTasks):
     q = Question(id="", question=req.question, note_id=req.note_id)
     created = store.create_question(q)
-    await broadcast("question.created", asdict(created))
+    background_tasks.add_task(broadcast, "question.created", asdict(created))
     return asdict(created)
 
 
 @app.patch("/questions/{question_id}")
-async def update_question(question_id: str, req: UpdateQuestionRequest):
+def update_question(question_id: str, req: UpdateQuestionRequest, background_tasks: BackgroundTasks):
     q = store.get_question(question_id)
     if not q:
         raise HTTPException(404, "not found")
@@ -523,15 +525,15 @@ async def update_question(question_id: str, req: UpdateQuestionRequest):
     if req.status is not None:
         q.status = req.status
     updated = store.update_question(q)
-    await broadcast("question.updated", asdict(updated))
+    background_tasks.add_task(broadcast, "question.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/questions/{question_id}")
-async def delete_question(question_id: str):
+def delete_question(question_id: str, background_tasks: BackgroundTasks):
     if not store.delete_question(question_id):
         raise HTTPException(404, "not found")
-    await broadcast("question.deleted", {"id": question_id})
+    background_tasks.add_task(broadcast, "question.deleted", {"id": question_id})
     return {"ok": True}
 
 
@@ -546,7 +548,7 @@ def list_note_threads(note_id: str):
 
 
 @app.post("/ai-threads")
-async def create_ai_thread(req: CreateAiThreadRequest):
+def create_ai_thread(req: CreateAiThreadRequest, background_tasks: BackgroundTasks):
     thread = AiThread(
         id="",
         note_id=req.note_id,
@@ -561,18 +563,19 @@ async def create_ai_thread(req: CreateAiThreadRequest):
 
     config = load_ai_config()
     if is_ai_configured():
-        task = asyncio.create_task(_run_ai_stream(created.id, config))
-        active_ai_tasks[created.id] = task
+        # Use BackgroundTasks to start the AI stream
+        background_tasks.add_task(_run_ai_stream, created.id, config)
     else:
         created.status = "error"
         created.response = "AI not configured"
         store.update_thread(created)
-        await broadcast("thread.updated", asdict(created))
+        background_tasks.add_task(broadcast, "thread.updated", asdict(created))
 
     return asdict(created)
 
 
 async def _run_ai_stream(thread_id: str, config: dict):
+    active_ai_tasks[thread_id] = asyncio.current_task()
     thread = store.get_thread(thread_id)
     if not thread:
         return
@@ -632,22 +635,18 @@ async def _run_ai_stream(thread_id: str, config: dict):
 
 
 @app.post("/ai-threads/{thread_id}/stop")
-async def stop_ai_thread(thread_id: str):
+def stop_ai_thread(thread_id: str):
     thread = store.get_thread(thread_id)
     if not thread:
         raise HTTPException(404, "thread not found")
     task = active_ai_tasks.get(thread_id)
     if task and not task.done():
         task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
     return asdict(thread)
 
 
 @app.patch("/ai-threads/{thread_id}")
-async def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest):
+def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest, background_tasks: BackgroundTasks):
     thread = store.get_thread(thread_id)
     if not thread:
         raise HTTPException(404, "not found")
@@ -656,15 +655,15 @@ async def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest):
     if req.response is not None:
         thread.response = req.response
     updated = store.update_thread(thread)
-    await broadcast("thread.updated", asdict(updated))
+    background_tasks.add_task(broadcast, "thread.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/ai-threads/{thread_id}")
-async def delete_ai_thread(thread_id: str):
+def delete_ai_thread(thread_id: str, background_tasks: BackgroundTasks):
     if not store.delete_thread(thread_id):
         raise HTTPException(404, "not found")
-    await broadcast("thread.deleted", {"id": thread_id})
+    background_tasks.add_task(broadcast, "thread.deleted", {"id": thread_id})
     return {"ok": True}
 
 
@@ -672,7 +671,7 @@ async def delete_ai_thread(thread_id: str):
 
 
 @app.post("/ai/stream")
-async def ai_stream(req: AiStreamRequest):
+def ai_stream(req: AiStreamRequest):
     config = load_ai_config()
     if not is_ai_configured():
         return StreamingResponse(

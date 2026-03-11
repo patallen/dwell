@@ -62,13 +62,29 @@ export function useAiThreads(noteId: string): UseAiThreadsReturn {
   }, []);
 
   const acceptThread = useCallback(async (id: string) => {
+    const thread = store.getThread(id);
+    if (!thread) return;
+
     store.removeThread(id);
-    updateAiThread(id, { status: "accepted" }).catch(() => {});
+    try {
+      await updateAiThread(id, { status: "accepted" });
+    } catch (err) {
+      console.error("Failed to accept thread, rolling back:", err);
+      store.setThread(thread);
+    }
   }, []);
 
   const dismissThread = useCallback(async (id: string) => {
+    const thread = store.getThread(id);
+    if (!thread) return;
+
     store.removeThread(id);
-    updateAiThread(id, { status: "dismissed" }).catch(() => {});
+    try {
+      await updateAiThread(id, { status: "dismissed" });
+    } catch (err) {
+      console.error("Failed to dismiss thread, rolling back:", err);
+      store.setThread(thread);
+    }
   }, []);
 
   const stopThread = useCallback((id: string) => {

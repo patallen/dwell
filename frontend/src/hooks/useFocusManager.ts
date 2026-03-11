@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type { Task, Note, FocusState, EnergyLevel, PendingAction } from "../api";
 import {
@@ -8,21 +8,7 @@ import {
   popContext,
   setContextMemo,
 } from "../api";
-import { store } from "../store";
-
-export const LAST_SEEN_KEY = "dwell:lastSeen";
-export const COLD_START_HOURS = 4;
-
-export function isColdStart(): boolean {
-  try {
-    const raw = localStorage.getItem(LAST_SEEN_KEY);
-    if (!raw) return true;
-    const elapsed = (Date.now() - Number(raw)) / 3600000;
-    return elapsed >= COLD_START_HOURS;
-  } catch {
-    return true;
-  }
-}
+import { store, useFocus } from "../store";
 
 export interface FocusManager {
   showLanding: boolean;
@@ -47,18 +33,25 @@ export interface FocusManager {
 }
 
 export function useFocusManager(): FocusManager {
-  const [showLanding, setShowLanding] = useState(isColdStart);
-  const [energy, setEnergy] = useState<EnergyLevel | null>(null);
-  const [focus, setFocus] = useState<FocusState | null>(null);
-  const [showWhereWasI, setShowWhereWasI] = useState(false);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const {
+    showLanding,
+    energy,
+    focus,
+    showWhereWasI,
+    pendingAction,
+    setShowLanding,
+    setEnergy,
+    setFocus,
+    setShowWhereWasI,
+    setPendingAction,
+  } = useFocus();
+
   const navigate = useNavigate();
   const location = useLocation();
 
   const applyFocus = useCallback((state: FocusState) => {
     setFocus(state);
-    localStorage.setItem(LAST_SEEN_KEY, String(Date.now()));
-  }, []);
+  }, [setFocus]);
 
   useEffect(() => {
     if (showLanding) return;
