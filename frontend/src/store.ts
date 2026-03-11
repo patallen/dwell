@@ -6,6 +6,7 @@ import type { Note, AiThread } from "./api";
 const notes = new Map<string, Note>();
 const threads = new Map<string, AiThread>();
 const listeners = new Set<() => void>();
+const focusListeners = new Set<() => void>();
 
 function emit() {
   for (const fn of listeners) fn();
@@ -53,6 +54,14 @@ export const store = {
     emit();
   },
 
+  subscribeFocus(fn: () => void) {
+    focusListeners.add(fn);
+    return () => { focusListeners.delete(fn); };
+  },
+
+  triggerFocusRefresh() {
+    for (const fn of focusListeners) fn();
+  },
 };
 
 // --- Selectors / hooks ---

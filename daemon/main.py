@@ -251,7 +251,7 @@ def get_context():
 
 
 @app.post("/context/push")
-def push_context(req: ContextPushRequest):
+async def push_context(req: ContextPushRequest):
     if req.memo_for_current:
         store.context_set_memo(req.memo_for_current)
     entry = ContextEntry(
@@ -261,17 +261,21 @@ def push_context(req: ContextPushRequest):
         pushed_at=datetime.now(),
     )
     store.context_push(entry)
-    return get_focus()
+    focus = get_focus()
+    await broadcast("focus.updated", focus)
+    return focus
 
 
 @app.post("/context/memo")
-def set_context_memo(req: ContextMemoRequest):
+async def set_context_memo(req: ContextMemoRequest):
     store.context_set_memo(req.memo)
-    return get_focus()
+    focus = get_focus()
+    await broadcast("focus.updated", focus)
+    return focus
 
 
 @app.post("/context/pop")
-def pop_context():
+async def pop_context():
     popped = store.context_pop()
     focus = get_focus()
     if popped:
@@ -281,13 +285,16 @@ def pop_context():
             "reason": popped.reason,
             "memo": popped.memo,
         }
+    await broadcast("focus.updated", focus)
     return focus
 
 
 @app.delete("/context/{ref_id}")
-def remove_context(ref_id: str):
+async def remove_context(ref_id: str):
     store.context_remove(ref_id)
-    return get_focus()
+    focus = get_focus()
+    await broadcast("focus.updated", focus)
+    return focus
 
 
 # --- Notes ---
@@ -334,7 +341,7 @@ def get_note_questions(note_id: str):
 
 
 @app.post("/notes")
-def create_note(req: CreateNoteRequest):
+async def create_note(req: CreateNoteRequest):
     deadline = None
     if req.deadline:
         try:
@@ -351,11 +358,12 @@ def create_note(req: CreateNoteRequest):
         deadline=deadline,
     )
     created = store.create_note(note)
+    await broadcast("note.created", asdict(created))
     return asdict(created)
 
 
 @app.patch("/notes/{note_id}")
-def update_note(note_id: str, req: UpdateNoteRequest):
+async def update_note(note_id: str, req: UpdateNoteRequest):
     note = store.get_note(note_id)
     if not note:
         raise HTTPException(404, "not found")
@@ -375,13 +383,15 @@ def update_note(note_id: str, req: UpdateNoteRequest):
         except ValueError:
             raise HTTPException(400, "invalid deadline format")
     updated = store.update_note(note)
+    await broadcast("note.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/notes/{note_id}")
-def delete_note(note_id: str):
+async def delete_note(note_id: str):
     if not store.delete_note(note_id):
         raise HTTPException(404, "not found")
+    await broadcast("note.deleted", {"id": note_id})
     return {"ok": True}
 
 
@@ -408,7 +418,7 @@ def get_task(task_id: str):
 
 
 @app.post("/tasks")
-def create_task(req: CreateTaskRequest):
+async def create_task(req: CreateTaskRequest):
     deadline = None
     if req.deadline:
         try:
@@ -425,11 +435,12 @@ def create_task(req: CreateTaskRequest):
         note_id=req.note_id,
     )
     created = store.create_task(task)
+    await broadcast("task.created", asdict(created))
     return asdict(created)
 
 
 @app.patch("/tasks/{task_id}")
-def update_task(task_id: str, req: UpdateTaskRequest):
+async def update_task(task_id: str, req: UpdateTaskRequest):
     task = store.get_task(task_id)
     if not task:
         raise HTTPException(404, "not found")
@@ -453,13 +464,15 @@ def update_task(task_id: str, req: UpdateTaskRequest):
     if req.note_id is not None:
         task.note_id = req.note_id
     updated = store.update_task(task)
+    await broadcast("task.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/tasks/{task_id}")
-def delete_task(task_id: str):
+async def delete_task(task_id: str):
     if not store.delete_task(task_id):
         raise HTTPException(404, "not found")
+    await broadcast("task.deleted", {"id": task_id})
     return {"ok": True}
 
 
@@ -489,14 +502,15 @@ def get_question(question_id: str):
 
 
 @app.post("/questions")
-def create_question(req: CreateQuestionRequest):
+async def create_question(req: CreateQuestionRequest):
     q = Question(id="", question=req.question, note_id=req.note_id)
     created = store.create_question(q)
+    await broadcast("question.created", asdict(created))
     return asdict(created)
 
 
 @app.patch("/questions/{question_id}")
-def update_question(question_id: str, req: UpdateQuestionRequest):
+async def update_question(question_id: str, req: UpdateQuestionRequest):
     q = store.get_question(question_id)
     if not q:
         raise HTTPException(404, "not found")
@@ -509,13 +523,15 @@ def update_question(question_id: str, req: UpdateQuestionRequest):
     if req.status is not None:
         q.status = req.status
     updated = store.update_question(q)
+    await broadcast("question.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/questions/{question_id}")
-def delete_question(question_id: str):
+async def delete_question(question_id: str):
     if not store.delete_question(question_id):
         raise HTTPException(404, "not found")
+    await broadcast("question.deleted", {"id": question_id})
     return {"ok": True}
 
 
@@ -631,7 +647,7 @@ async def stop_ai_thread(thread_id: str):
 
 
 @app.patch("/ai-threads/{thread_id}")
-def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest):
+async def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest):
     thread = store.get_thread(thread_id)
     if not thread:
         raise HTTPException(404, "not found")
@@ -640,13 +656,15 @@ def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest):
     if req.response is not None:
         thread.response = req.response
     updated = store.update_thread(thread)
+    await broadcast("thread.updated", asdict(updated))
     return asdict(updated)
 
 
 @app.delete("/ai-threads/{thread_id}")
-def delete_ai_thread(thread_id: str):
+async def delete_ai_thread(thread_id: str):
     if not store.delete_thread(thread_id):
         raise HTTPException(404, "not found")
+    await broadcast("thread.deleted", {"id": thread_id})
     return {"ok": True}
 
 

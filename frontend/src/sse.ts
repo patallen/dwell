@@ -25,8 +25,32 @@ function connect() {
     try { store.removeThread((JSON.parse(e.data) as { id: string }).id); } catch { /* malformed */ }
   });
 
+  es.addEventListener("note.created", (e) => {
+    try { store.setNote(JSON.parse(e.data) as Note); } catch { /* malformed */ }
+  });
+
   es.addEventListener("note.updated", (e) => {
     try { store.setNote(JSON.parse(e.data) as Note); } catch { /* malformed */ }
+  });
+
+  es.addEventListener("note.deleted", (e) => {
+    try { store.removeNote((JSON.parse(e.data) as { id: string }).id); } catch { /* malformed */ }
+  });
+
+  es.addEventListener("task.created", () => {
+    store.triggerFocusRefresh();
+  });
+
+  es.addEventListener("task.updated", () => {
+    store.triggerFocusRefresh();
+  });
+
+  es.addEventListener("task.deleted", () => {
+    store.triggerFocusRefresh();
+  });
+
+  es.addEventListener("focus.updated", () => {
+    store.triggerFocusRefresh();
   });
 
   es.onopen = () => {
