@@ -77,6 +77,12 @@ export interface FocusState {
 
 export type EnergyLevel = "calm" | "neutral" | "rough";
 
+export type PendingAction =
+  | { type: "push"; refId: string; refType: string; reason: string }
+  | { type: "pause" }
+  | { type: "done" }
+  | { type: "drop" };
+
 // --- Focus ---
 
 export async function fetchFocus(energy?: EnergyLevel): Promise<FocusState> {
