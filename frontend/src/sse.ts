@@ -1,11 +1,20 @@
-import { store } from "./store";
+import { store, useFocusStore } from "./store";
 import { fetchNotes } from "./api";
-import type { AiThread, Note } from "./api";
+import type { AiThread, Note, FocusState } from "./api";
 
 const SSE_URL = "http://127.0.0.1:7777/events";
 
 let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+function parseSSEPayload<T>(data: string): T | null {
+  try {
+    return JSON.parse(data) as T;
+  } catch (err) {
+    console.error("Failed to parse SSE payload:", err, data);
+    return null;
+  }
+}
 
 function connect() {
   if (eventSource) return;
@@ -14,19 +23,51 @@ function connect() {
   eventSource = es;
 
   es.addEventListener("thread.created", (e) => {
-    try { store.setThread(JSON.parse(e.data) as AiThread); } catch { /* malformed */ }
+    const data = parseSSEPayload<AiThread>(e.data);
+    if (data) store.setThread(data);
   });
 
   es.addEventListener("thread.updated", (e) => {
-    try { store.setThread(JSON.parse(e.data) as AiThread); } catch { /* malformed */ }
+    const data = parseSSEPayload<AiThread>(e.data);
+    if (data) store.setThread(data);
   });
 
   es.addEventListener("thread.deleted", (e) => {
-    try { store.removeThread((JSON.parse(e.data) as { id: string }).id); } catch { /* malformed */ }
+    const data = parseSSEPayload<{ id: string }>(e.data);
+    if (data) store.removeThread(data.id);
+  });
+
+  es.addEventListener("note.created", (e) => {
+    const data = parseSSEPayload<Note>(e.data);
+    if (data) store.setNote(data);
   });
 
   es.addEventListener("note.updated", (e) => {
-    try { store.setNote(JSON.parse(e.data) as Note); } catch { /* malformed */ }
+    const data = parseSSEPayload<Note>(e.data);
+    if (data) store.setNote(data);
+  });
+
+  es.addEventListener("note.deleted", (e) => {
+    const data = parseSSEPayload<{ id: string }>(e.data);
+    if (data) store.removeNote(data.id);
+  });
+
+  es.addEventListener("task.created", (e) => {
+    // Tasks are currently not in the entity store but affect focus
+    // Backend broadcasts focus.updated alongside task events
+  });
+
+  es.addEventListener("task.updated", (e) => {
+    // Tasks are currently not in the entity store but affect focus
+  });
+
+  es.addEventListener("task.deleted", (e) => {
+    // Tasks are currently not in the entity store but affect focus
+  });
+
+  es.addEventListener("focus.updated", (e) => {
+    const focus = parseSSEPayload<FocusState>(e.data);
+    if (focus) useFocusStore.getState().setFocus(focus);
   });
 
   es.onopen = () => {

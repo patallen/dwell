@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type { Task, Note, FocusState, EnergyLevel, PendingAction } from "../api";
 import {
@@ -8,20 +8,7 @@ import {
   popContext,
   setContextMemo,
 } from "../api";
-
-export const LAST_SEEN_KEY = "dwell:lastSeen";
-export const COLD_START_HOURS = 4;
-
-export function isColdStart(): boolean {
-  try {
-    const raw = localStorage.getItem(LAST_SEEN_KEY);
-    if (!raw) return true;
-    const elapsed = (Date.now() - Number(raw)) / 3600000;
-    return elapsed >= COLD_START_HOURS;
-  } catch {
-    return true;
-  }
-}
+import { store, useFocus } from "../store";
 
 export interface FocusManager {
   showLanding: boolean;
@@ -46,66 +33,89 @@ export interface FocusManager {
 }
 
 export function useFocusManager(): FocusManager {
-  const [showLanding, setShowLanding] = useState(isColdStart);
-  const [energy, setEnergy] = useState<EnergyLevel | null>(null);
-  const [focus, setFocus] = useState<FocusState | null>(null);
-  const [showWhereWasI, setShowWhereWasI] = useState(false);
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const {
+    showLanding,
+    energy,
+    focus,
+    showWhereWasI,
+    pendingAction,
+    setShowLanding,
+    setEnergy,
+    setFocus,
+    setShowWhereWasI,
+    setPendingAction,
+  } = useFocus();
+
   const navigate = useNavigate();
   const location = useLocation();
 
   const applyFocus = useCallback((state: FocusState) => {
     setFocus(state);
-    localStorage.setItem(LAST_SEEN_KEY, String(Date.now()));
-  }, []);
+  }, [setFocus]);
 
   useEffect(() => {
     if (showLanding) return;
-    fetchFocus(energy ?? undefined).then(applyFocus);
+    fetchFocus(energy ?? undefined).then(applyFocus).catch(() => {});
   }, [applyFocus, energy, location.pathname, showLanding]);
 
   const refresh = useCallback(async () => {
-    applyFocus(await fetchFocus(energy ?? undefined));
+    try {
+      const state = await fetchFocus(energy ?? undefined);
+      applyFocus(state);
+    } catch (err) {
+      console.error("Failed to refresh focus:", err);
+    }
   }, [applyFocus, energy]);
+
+  useEffect(() => {
+    return store.subscribeFocus(() => {
+      void refresh();
+    });
+  }, [refresh]);
 
   const executeAction = useCallback(async (action: PendingAction, memo?: string) => {
     let showRestore = false;
 
-    if (action.type === "push") {
-      const result = await pushContext(action.refId, action.refType, action.reason, memo);
-      if (result.state === "focused" && result.context?.memo) {
-        showRestore = true;
-      }
-    } else if (action.type === "pause") {
-      const result = await popContext();
-      if (result.state === "focused") {
-        showRestore = true;
-      }
-    } else if (action.type === "done") {
-      if (focus?.task) {
-        await updateTask(focus.task.id, { status: "done" });
-        if (focus.state === "focused") {
-          const result = await popContext();
-          if (result.state === "focused") {
-            showRestore = true;
+    try {
+      if (action.type === "push") {
+        const result = await pushContext(action.refId, action.refType, action.reason, memo);
+        if (result.state === "focused" && result.context?.memo) {
+          showRestore = true;
+        }
+      } else if (action.type === "pause") {
+        const result = await popContext();
+        if (result.state === "focused") {
+          showRestore = true;
+        }
+      } else if (action.type === "done") {
+        if (focus?.task) {
+          await updateTask(focus.task.id, { status: "done" });
+          if (focus.state === "focused") {
+            const result = await popContext();
+            if (result.state === "focused") {
+              showRestore = true;
+            }
+          }
+        }
+      } else if (action.type === "drop") {
+        if (focus?.task) {
+          await updateTask(focus.task.id, { status: "dropped" });
+          if (focus.state === "focused") {
+            const result = await popContext();
+            if (result.state === "focused") {
+              showRestore = true;
+            }
           }
         }
       }
-    } else if (action.type === "drop") {
-      if (focus?.task) {
-        await updateTask(focus.task.id, { status: "dropped" });
-        if (focus.state === "focused") {
-          const result = await popContext();
-          if (result.state === "focused") {
-            showRestore = true;
-          }
-        }
+    } catch (err) {
+      console.error("Action failed:", err);
+      // In a real app, we might show a toast here
+    } finally {
+      await refresh();
+      if (showRestore) {
+        setShowWhereWasI(true);
       }
-    }
-
-    await refresh();
-    if (showRestore) {
-      setShowWhereWasI(true);
     }
   }, [focus, refresh]);
 

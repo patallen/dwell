@@ -1,11 +1,64 @@
 import { useSyncExternalStore, useCallback, useRef } from "react";
-import type { Note, AiThread } from "./api";
+import { create } from "zustand";
+import type { Note, AiThread, FocusState, EnergyLevel, PendingAction } from "./api";
 
-// --- Store internals ---
+// --- Focus Store (Zustand) ---
+
+export const COLD_START_HOURS = 4;
+export const LAST_SEEN_KEY = "dwell:lastSeen";
+
+function isColdStart(): boolean {
+  try {
+    const raw = localStorage.getItem(LAST_SEEN_KEY);
+    if (!raw) return true;
+    const elapsed = (Date.now() - Number(raw)) / 3600000;
+    return elapsed >= COLD_START_HOURS;
+  } catch {
+    return true;
+  }
+}
+
+interface FocusStoreState {
+  showLanding: boolean;
+  energy: EnergyLevel | null;
+  focus: FocusState | null;
+  showWhereWasI: boolean;
+  pendingAction: PendingAction | null;
+
+  setFocus: (focus: FocusState | null) => void;
+  setEnergy: (energy: EnergyLevel | null) => void;
+  setShowLanding: (show: boolean) => void;
+  setShowWhereWasI: (show: boolean) => void;
+  setPendingAction: (action: PendingAction | null) => void;
+}
+
+export const useFocusStore = create<FocusStoreState>((set) => ({
+  showLanding: isColdStart(),
+  energy: null,
+  focus: null,
+  showWhereWasI: false,
+  pendingAction: null,
+
+  setFocus: (focus) => {
+    set({ focus });
+    if (focus) {
+      localStorage.setItem(LAST_SEEN_KEY, String(Date.now()));
+    }
+  },
+  setEnergy: (energy) => set({ energy }),
+  setShowLanding: (showLanding) => set({ showLanding }),
+  setShowWhereWasI: (showWhereWasI) => set({ showWhereWasI }),
+  setPendingAction: (pendingAction) => set({ pendingAction }),
+}));
+
+export const useFocus = () => useFocusStore();
+
+// --- Entity Store (Internal) ---
 
 const notes = new Map<string, Note>();
 const threads = new Map<string, AiThread>();
 const listeners = new Set<() => void>();
+const focusListeners = new Set<() => void>();
 
 function emit() {
   for (const fn of listeners) fn();
@@ -48,11 +101,23 @@ export const store = {
     }
   },
 
+  getThread(id: string) {
+    return threads.get(id);
+  },
+
   removeThread(id: string) {
     threads.delete(id);
     emit();
   },
 
+  subscribeFocus(fn: () => void) {
+    focusListeners.add(fn);
+    return () => { focusListeners.delete(fn); };
+  },
+
+  triggerFocusRefresh() {
+    for (const fn of focusListeners) fn();
+  },
 };
 
 // --- Selectors / hooks ---
