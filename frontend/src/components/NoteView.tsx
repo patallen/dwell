@@ -1,14 +1,31 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { Editor as TiptapEditor } from "@tiptap/react";
-import type { Note, Task, Question } from "../api";
+import type { Note, Task, Question, AiStreamEvent } from "../api";
 import {
   fetchNote, updateNote, fetchNoteTasks, fetchNoteQuestions,
   createTask, updateTask, deleteTask,
   createQuestion, updateQuestion, deleteQuestion,
+  streamAi,
 } from "../api";
 import Editor from "./Editor";
 import type { QuestionMenuAction } from "./Editor";
 import { useEditorState } from "../hooks/useEditorState";
+import { useAiThreads } from "../hooks/useAiThreads";
+import AiPromptPopover from "./AiPromptPopover";
+import AiThreadCard from "./AiThreadCard";
+
+/** Find the actual from/to of an aiThread mark in the document */
+function findThreadMarkRange(editor: TiptapEditor, threadId: string): { from: number; to: number } | null {
+  let result: { from: number; to: number } | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (result) return false;
+    const mark = node.marks.find(m => m.type.name === "aiThread" && m.attrs.threadId === threadId);
+    if (mark) {
+      result = { from: pos, to: pos + node.nodeSize };
+    }
+  });
+  return result;
+}
 
 interface NoteViewProps {
   noteId: string;
@@ -46,12 +63,176 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const editorRef = useRef<TiptapEditor | null>(null);
   const editorState = useEditorState(noteId);
+  const aiAbortRef = useRef<AbortController | null>(null);
+  const { threads, activeCount, readyCount, startThread, acceptThread, dismissThread, stopThread } = useAiThreads(noteId);
+  const [promptCtx, setPromptCtx] = useState<{
+    position: { top: number; left: number };
+    from: number;
+    to: number;
+    text: string;
+    cursorContext: string;
+  } | null>(null);
+  const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [cardPosition, setCardPosition] = useState<{ top: number }>({ top: 0 });
+
+  const showCardForThread = useCallback((threadId: string, anchorFrom: number) => {
+    if (!editorRef.current) return;
+    const view = editorRef.current.view;
+    const pos = Math.min(anchorFrom, view.state.doc.content.size);
+    const coords = view.coordsAtPos(pos);
+    const editorRect = view.dom.getBoundingClientRect();
+    setCardPosition({ top: coords.bottom - editorRect.top + 4 });
+    setActiveCardId(threadId);
+  }, []);
+
+  const handleAiTrigger = useCallback((ctx: { from: number; to: number; text: string; cursorContext: string }) => {
+    if (!editorRef.current) return;
+    const view = editorRef.current.view;
+    const coords = view.coordsAtPos(ctx.from);
+    const editorRect = view.dom.getBoundingClientRect();
+    // Clamp left so popover (280px wide, centered) stays within editor bounds
+    const rawLeft = coords.left - editorRect.left;
+    const clampedLeft = Math.max(140, Math.min(rawLeft, editorRect.width - 140));
+    setPromptCtx({
+      position: { top: coords.bottom - editorRect.top + 4, left: clampedLeft },
+      ...ctx,
+    });
+  }, []);
+
+  const handlePromptSubmit = useCallback(async (action: "elaborate" | "research", prompt: string) => {
+    if (!promptCtx || !editorRef.current) return;
+    const thread = await startThread({
+      noteId,
+      action,
+      prompt,
+      selectionText: promptCtx.text,
+      anchorFrom: promptCtx.from,
+      anchorTo: promptCtx.to,
+    });
+    if (promptCtx.from !== promptCtx.to) {
+      editorRef.current.chain().focus()
+        .setTextSelection({ from: promptCtx.from, to: promptCtx.to })
+        .setAiThreadMark(thread.id)
+        .run();
+    } else {
+      // No selection — drop a pin at cursor so user can see where this thread lives
+      editorRef.current.commands.addAiThreadPin(thread.id, promptCtx.from);
+    }
+    setPromptCtx(null);
+    showCardForThread(thread.id, promptCtx.from);
+  }, [promptCtx, noteId, startThread, showCardForThread]);
+
+  const handleThreadInsertBelow = useCallback((threadId: string, text: string) => {
+    if (!editorRef.current) return;
+    const editor = editorRef.current;
+    const markRange = findThreadMarkRange(editor, threadId);
+    const thread = threads.find(t => t.id === threadId);
+    const anchorTo = markRange?.to ?? thread?.anchor_to ?? editor.state.selection.to;
+    const content = text.split("\n\n").filter(Boolean).map(p => ({ type: "paragraph", content: [{ type: "text", text: p }] }));
+    if (content.length === 0) {
+      // Nothing to insert (empty response) — just clean up
+      editor.commands.removeAiThreadMark(threadId);
+      editor.commands.removeAiThreadPin(threadId);
+      void acceptThread(threadId);
+      setActiveCardId(null);
+      return;
+    }
+    try {
+      const insertPos = Math.min(anchorTo, editor.state.doc.content.size);
+      const resolved = editor.state.doc.resolve(insertPos);
+      let depth = resolved.depth;
+      while (depth > 0 && !resolved.node(depth).isBlock) depth--;
+      const afterBlock = resolved.after(depth);
+      editor.chain().focus().insertContentAt(afterBlock, content).run();
+    } catch {
+      editor.chain().focus().insertContentAt(editor.state.doc.content.size, content).run();
+    }
+    editor.commands.removeAiThreadMark(threadId);
+    editor.commands.removeAiThreadPin(threadId);
+    void acceptThread(threadId);
+    setActiveCardId(null);
+  }, [threads, acceptThread]);
+
+  const handleThreadReplace = useCallback((threadId: string, text: string) => {
+    if (!editorRef.current) return;
+    const editor = editorRef.current;
+    const markRange = findThreadMarkRange(editor, threadId);
+    const thread = threads.find(t => t.id === threadId);
+    const from = markRange?.from ?? thread?.anchor_from;
+    const to = markRange?.to ?? thread?.anchor_to;
+    if (from == null || to == null) return;
+    try {
+      const docSize = editor.state.doc.content.size;
+      editor.chain().focus()
+        .setTextSelection({ from: Math.min(from, docSize), to: Math.min(to, docSize) })
+        .deleteSelection()
+        .insertContent(text)
+        .run();
+    } catch {
+      editor.chain().focus().insertContent(text).run();
+    }
+    editor.commands.removeAiThreadMark(threadId);
+    editor.commands.removeAiThreadPin(threadId);
+    void acceptThread(threadId);
+    setActiveCardId(null);
+  }, [threads, acceptThread]);
+
+  const handleThreadCopy = useCallback((text: string) => {
+    void navigator.clipboard.writeText(text);
+  }, []);
+
+  const handleThreadDismiss = useCallback((threadId: string) => {
+    if (editorRef.current) {
+      editorRef.current.commands.removeAiThreadMark(threadId);
+      editorRef.current.commands.removeAiThreadPin(threadId);
+    }
+    void dismissThread(threadId);
+    setActiveCardId(null);
+  }, [dismissThread]);
+
+  const handleThreadStop = useCallback((threadId: string) => {
+    stopThread(threadId);
+  }, [stopThread]);
+
+  // Sync thread status to DOM + clean up orphaned marks from previous sessions
+  useEffect(() => {
+    if (!editorRef.current) return;
+    const editor = editorRef.current;
+    const editorEl = editor.view.dom;
+    const activeIds = new Set(threads.map(t => t.id));
+    // Set status on active thread highlights
+    for (const thread of threads) {
+      const spans = editorEl.querySelectorAll(`[data-ai-thread-id="${thread.id}"]`);
+      spans.forEach(span => span.setAttribute("data-thread-status", thread.status));
+    }
+    // Remove orphaned marks (thread no longer exists)
+    const allSpans = editorEl.querySelectorAll("[data-ai-thread-id]");
+    const orphanIds = new Set<string>();
+    allSpans.forEach(span => {
+      const id = span.getAttribute("data-ai-thread-id");
+      if (id && !activeIds.has(id)) orphanIds.add(id);
+    });
+    for (const id of orphanIds) {
+      editor.commands.removeAiThreadMark(id);
+    }
+  }, [threads]);
 
   const handleEditorReady = useCallback((editor: TiptapEditor) => {
     editorRef.current = editor;
     editorState.restore(editor);
     editor.on('selectionUpdate', () => {
       editorState.save(editor);
+    });
+    // Handle clicks on AI pin widgets (decorations, not marks)
+    editor.view.dom.addEventListener('click', (e) => {
+      const pin = (e.target as HTMLElement).closest('.ai-thread-pin');
+      if (!pin) return;
+      const threadId = (pin as HTMLElement).dataset.aiThreadId;
+      if (!threadId) return;
+      const rect = pin.getBoundingClientRect();
+      const editorRect = editor.view.dom.getBoundingClientRect();
+      setCardPosition({ top: rect.bottom - editorRect.top + 4 });
+      setActiveCardId(threadId);
     });
   }, [editorState]);
 
@@ -62,6 +243,12 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
       }
     };
   }, [noteId, editorState]);
+
+  useEffect(() => {
+    return () => {
+      aiAbortRef.current?.abort();
+    };
+  }, [noteId]);
 
   useEffect(() => {
     Promise.all([
@@ -139,6 +326,7 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
 
   const [questionMenu, setQuestionMenu] = useState<{ question: Question; position: { top: number; left: number } } | null>(null);
   const [inlineAnswer, setInlineAnswer] = useState<string>("");
+  const [aiStreaming, setAiStreaming] = useState(false);
 
   const handleNewQuestion = async (text: string): Promise<string> => {
     if (!note) return "";
@@ -154,7 +342,7 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
     setInlineAnswer(q.answer || "");
   };
 
-  const closeMenu = () => { setQuestionMenu(null); setInlineAnswer(""); };
+  const closeMenu = () => { aiAbortRef.current?.abort(); setQuestionMenu(null); setInlineAnswer(""); setAiStreaming(false); };
 
   const handleInlineAnswer = async () => {
     if (!questionMenu || !inlineAnswer.trim()) return;
@@ -321,13 +509,43 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
         <div className="relative">
           <Editor
             content={note.body}
+            noteId={noteId}
             onUpdate={handleBodyUpdate}
             onQuestion={handleNewQuestion}
             onQuestionAction={handleQuestionAction}
+            onAiTrigger={handleAiTrigger}
+            onAiThreadClick={(threadId, position) => {
+              setCardPosition({ top: position.top });
+              setActiveCardId(threadId);
+            }}
             placeholder="Think here..."
             vim
             onEditorReady={handleEditorReady}
           />
+
+          {/* AI prompt popover */}
+          {promptCtx && (
+            <AiPromptPopover
+              position={promptCtx.position}
+              selectionText={promptCtx.text}
+              onSubmit={(action, prompt) => void handlePromptSubmit(action, prompt)}
+              onDismiss={() => setPromptCtx(null)}
+            />
+          )}
+
+          {/* AI thread card */}
+          {activeCardId && threads.find(t => t.id === activeCardId) && (
+            <AiThreadCard
+              thread={threads.find(t => t.id === activeCardId)!}
+              position={cardPosition}
+              onInsertBelow={handleThreadInsertBelow}
+              onReplace={handleThreadReplace}
+              onCopy={handleThreadCopy}
+              onDismiss={handleThreadDismiss}
+              onStop={handleThreadStop}
+              onClose={() => setActiveCardId(null)}
+            />
+          )}
 
           {/* Inline question context menu */}
           {questionMenu && (
@@ -352,15 +570,67 @@ export default function NoteView({ noteId, onBack }: NoteViewProps) {
                   className="w-full text-sm bg-transparent border border-border rounded px-2 py-1 text-text outline-none mb-2"
                   placeholder={questionMenu.question.status === "answered" ? "Edit answer..." : "Answer..."}
                 />
+                {aiStreaming && (
+                  <div className="flex items-center gap-2 text-xs text-text-muted mb-2">
+                    <span className="inline-block w-1 h-3 bg-accent/40 animate-pulse" />
+                    thinking...
+                  </div>
+                )}
                 <div className="flex gap-2 text-[11px]">
-                  <button onClick={() => void handleInlineAnswer()} className="text-success hover:text-success/80">save</button>
-                  <button onClick={() => void handleInlineDelete()} className="text-urgent hover:text-urgent/80">remove</button>
+                  <button onClick={() => void handleInlineAnswer()} disabled={aiStreaming} className={`${aiStreaming ? "text-text-muted/30" : "text-success hover:text-success/80"}`}>save</button>
+                  {aiStreaming ? (
+                    <button onClick={() => { aiAbortRef.current?.abort(); setAiStreaming(false); }} className="text-urgent hover:text-urgent/80">stop</button>
+                  ) : (
+                    <button onClick={() => {
+                      if (!questionMenu) return;
+                      aiAbortRef.current?.abort();
+                      const controller = new AbortController();
+                      aiAbortRef.current = controller;
+                      setInlineAnswer("");
+                      setAiStreaming(true);
+                      streamAi(
+                        { action: "research", prompt: questionMenu.question.question, note_id: noteId },
+                        (event: AiStreamEvent) => {
+                          if (event.type === "delta") {
+                            setInlineAnswer(prev => prev + event.content);
+                          } else if (event.type === "done") {
+                            setAiStreaming(false);
+                          } else if (event.type === "error") {
+                            setInlineAnswer(prev => prev + `\n[Error: ${event.message}]`);
+                            setAiStreaming(false);
+                          }
+                        },
+                        controller.signal,
+                      ).catch(() => { setAiStreaming(false); });
+                    }} className="text-accent hover:text-accent/80">ask AI</button>
+                  )}
+                  <button onClick={() => void handleInlineDelete()} disabled={aiStreaming} className={`${aiStreaming ? "text-text-muted/30" : "text-urgent hover:text-urgent/80"}`}>remove</button>
                   <button onClick={closeMenu} className="text-text-muted hover:text-text-secondary ml-auto">cancel</button>
                 </div>
               </div>
             </>
           )}
         </div>
+        {(activeCount > 0 || readyCount > 0) && (
+          <div className="flex items-center gap-3 mt-1 text-[10px] text-text-muted">
+            {activeCount > 0 && (
+              <button onClick={() => {
+                const activeThread = threads.find(t => t.status === "streaming");
+                if (activeThread) showCardForThread(activeThread.id, activeThread.anchor_from);
+              }} className="text-accent hover:text-accent/80 animate-pulse">
+                {activeCount} AI active
+              </button>
+            )}
+            {readyCount > 0 && (
+              <button onClick={() => {
+                const readyThread = threads.find(t => t.status === "ready");
+                if (readyThread) showCardForThread(readyThread.id, readyThread.anchor_from);
+              }} className="text-success hover:text-success/80">
+                {readyCount} ready
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Done items — collapsed by default */}

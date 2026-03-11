@@ -47,6 +47,21 @@ class Question:
 
 
 @dataclass
+class AiThread:
+    id: str
+    note_id: str
+    action: str = "elaborate"  # elaborate | research
+    prompt: str = ""
+    selection_text: str = ""
+    anchor_from: int = 0
+    anchor_to: int = 0
+    status: str = "streaming"  # streaming | ready | error | accepted | dismissed
+    response: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+
+
+@dataclass
 class ContextEntry:
     type: str  # note | task | question
     ref_id: str

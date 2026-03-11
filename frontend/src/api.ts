@@ -269,3 +269,116 @@ export async function updateQuestion(
 export async function deleteQuestion(id: string): Promise<void> {
   await fetch(`${API}/questions/${id}`, { method: "DELETE" });
 }
+
+// --- AI Threads ---
+
+export interface AiThread {
+  id: string;
+  note_id: string;
+  action: "elaborate" | "research";
+  prompt: string;
+  selection_text: string;
+  anchor_from: number;
+  anchor_to: number;
+  status: "streaming" | "ready" | "error" | "accepted" | "dismissed";
+  response: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchNoteAiThreads(noteId: string): Promise<AiThread[]> {
+  const res = await fetch(`${API}/notes/${noteId}/ai-threads`);
+  return res.json();
+}
+
+export async function createAiThread(data: {
+  note_id: string;
+  action: string;
+  prompt: string;
+  selection_text: string;
+  anchor_from: number;
+  anchor_to: number;
+}): Promise<AiThread> {
+  const res = await fetch(`${API}/ai-threads`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function updateAiThread(
+  id: string,
+  data: Partial<Pick<AiThread, "status" | "response">>
+): Promise<AiThread> {
+  const res = await fetch(`${API}/ai-threads/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function deleteAiThread(id: string): Promise<void> {
+  await fetch(`${API}/ai-threads/${id}`, { method: "DELETE" });
+}
+
+// --- AI ---
+
+export interface AiStreamRequest {
+  action: "research" | "brainstorm" | "breakdown" | "freeform";
+  prompt: string;
+  note_id?: string;
+  selection?: string | null;
+  cursor_context?: string | null;
+}
+
+export type AiStreamEvent =
+  | { type: "delta"; content: string }
+  | { type: "thinking" }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export async function fetchAiStatus(): Promise<{ configured: boolean; model: string | null }> {
+  const res = await fetch(`${API}/ai/status`);
+  return res.json();
+}
+
+export async function streamAi(
+  request: AiStreamRequest,
+  onEvent: (event: AiStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${API}/ai/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    signal,
+  });
+
+  if (!res.ok) {
+    onEvent({ type: "error", message: `HTTP ${res.status}` });
+    return;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) return;
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        try {
+          const event = JSON.parse(line.slice(6)) as AiStreamEvent;
+          onEvent(event);
+        } catch { /* skip malformed */ }
+      }
+    }
+  }
+}

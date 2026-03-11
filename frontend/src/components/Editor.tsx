@@ -4,6 +4,8 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { OpenQuestion } from "../extensions/openQuestion";
 import { VimMode } from "../extensions/vimMode";
 import type { VimMode as VimModeType, VimModeStorage } from "../extensions/vimMode";
+import AiThreadExt from "../extensions/aiThread";
+import type { AiThreadStorage } from "../extensions/aiThread";
 import { useCallback, useEffect, useState, useRef } from "react";
 
 export interface QuestionMenuAction {
@@ -14,15 +16,18 @@ export interface QuestionMenuAction {
 
 interface EditorProps {
   content: string;
+  noteId: string;
   onUpdate: (content: string) => void;
   onQuestion?: (text: string) => Promise<string | void>;
   onQuestionAction?: (action: QuestionMenuAction) => void;
+  onAiTrigger?: (ctx: { from: number; to: number; text: string; cursorContext: string }) => void;
+  onAiThreadClick?: (threadId: string, position: { top: number; left: number }) => void;
   placeholder?: string;
   vim?: boolean;
   onEditorReady?: (editor: TiptapEditor) => void;
 }
 
-export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, placeholder, vim = true, onEditorReady }: EditorProps) {
+export default function Editor({ content, onUpdate, onQuestion, onQuestionAction, onAiTrigger, onAiThreadClick, placeholder, vim = true, onEditorReady }: EditorProps) {
   const [toolbarPos, setToolbarPos] = useState<{ top: number; left: number } | null>(null);
   const [vimMode, setVimMode] = useState<VimModeType>("normal");
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -34,6 +39,7 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     StarterKit,
     Placeholder.configure({ placeholder: placeholder || "Start writing..." }),
     OpenQuestion,
+    AiThreadExt,
     ...(vim ? [VimMode] : []),
   ];
 
@@ -64,12 +70,28 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
         class: "tiptap outline-none min-h-[200px]",
       },
       handleClick: (view, pos) => {
+        const resolved = view.state.doc.resolve(pos);
+        // resolved.marks() can miss inline marks at boundaries; merge with node marks
+        const marks = resolved.marks();
+        const nodeMarks = resolved.nodeAfter?.marks ?? resolved.nodeBefore?.marks ?? [];
+        const allMarks = [...marks, ...nodeMarks.filter(m => !marks.some(em => em.eq(m)))];
+
+        // AI thread highlight click
+        const threadMark = allMarks.find(m => m.type.name === "aiThread");
+        if (threadMark?.attrs.threadId && onAiThreadClickRef.current) {
+          const coords = view.coordsAtPos(pos);
+          const editorRect = view.dom.getBoundingClientRect();
+          onAiThreadClickRef.current(threadMark.attrs.threadId, {
+            top: coords.bottom - editorRect.top + 4,
+            left: coords.left - editorRect.left,
+          });
+          return true;
+        }
+
         if (!onQuestionAction) return false;
         // Don't open question menu in vim normal mode — just navigate
         if (vimModeRef.current === "normal") return false;
-        const resolved = view.state.doc.resolve(pos);
-        const marks = resolved.marks();
-        const questionMark = marks.find(m => m.type.name === "openQuestion");
+        const questionMark = allMarks.find(m => m.type.name === "openQuestion");
         if (questionMark?.attrs.questionId) {
           const coords = view.coordsAtPos(pos);
           const editorRect = view.dom.getBoundingClientRect();
@@ -95,6 +117,25 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     }
   }, [editor, onEditorReady]);
 
+  // Wire up AI callbacks via ref to avoid stale closures
+  const aiTriggerRef = useRef<((ctx: { from: number; to: number; text: string; cursorContext: string }) => void) | undefined>(undefined);
+  aiTriggerRef.current = onAiTrigger;
+  const onAiThreadClickRef = useRef<((threadId: string, position: { top: number; left: number }) => void) | undefined>(undefined);
+  onAiThreadClickRef.current = onAiThreadClick;
+
+  useEffect(() => {
+    if (!editor) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const aiStorage = (editor.storage as any).aiThreadManager as AiThreadStorage | undefined;
+    if (!aiStorage) return;
+    const wrapper = (ctx: { from: number; to: number; text: string; cursorContext: string }) => aiTriggerRef.current?.(ctx);
+    // eslint-disable-next-line react-hooks/immutability
+    aiStorage.onAiTrigger = wrapper;
+    return () => {
+      if (aiStorage.onAiTrigger === wrapper) aiStorage.onAiTrigger = undefined;
+    };
+  }, [editor]);
+
   // Wire up vim mode change callback via ref to avoid hook immutability lint
   const vimCallbackRef = useRef<(mode: VimModeType) => void>(undefined);
   vimCallbackRef.current = (mode: VimModeType) => { vimModeRef.current = mode; setVimMode(mode); };
@@ -108,8 +149,18 @@ export default function Editor({ content, onUpdate, onQuestion, onQuestionAction
     const wrapper = (mode: VimModeType) => vimCallbackRef.current?.(mode);
     // eslint-disable-next-line react-hooks/immutability
     storage.onModeChange = wrapper;
+    const aiTriggerWrapper = (ctx: { from: number; to: number; text: string }) => {
+      const doc = editor.state.doc;
+      const pos = ctx.from;
+      const start = Math.max(0, pos - 200);
+      const end = Math.min(doc.content.size, pos + 200);
+      const cursorContext = doc.textBetween(start, end, "\n");
+      aiTriggerRef.current?.({ ...ctx, cursorContext });
+    };
+    storage.onAiTrigger = aiTriggerWrapper;
     return () => {
       if (storage.onModeChange === wrapper) storage.onModeChange = undefined;
+      if (storage.onAiTrigger === aiTriggerWrapper) storage.onAiTrigger = undefined;
     };
   }, [editor, vim]);
 

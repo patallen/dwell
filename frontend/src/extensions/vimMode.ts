@@ -7,6 +7,7 @@ export type VimMode = "normal" | "insert" | "visual";
 export interface VimModeStorage {
   mode: VimMode;
   onModeChange?: (mode: VimMode) => void;
+  onAiTrigger?: (ctx: { from: number; to: number; text: string }) => void;
 }
 
 const vimPluginKey = new PluginKey("vim");
@@ -330,6 +331,19 @@ export const VimMode = Extension.create<object, VimModeStorage>({
                   const st = Math.min(Math.max(visualAnchor, visualHead) + 1, vDoc.content.size);
                   view.dispatch(vState.tr.delete(sf, st));
                   setMode("insert");
+                  return true;
+                }
+
+                case "q": {
+                  // Trigger inline AI on the visual selection
+                  const sf = Math.min(visualAnchor, visualHead);
+                  const st = Math.min(Math.max(visualAnchor, visualHead) + 1, vDoc.content.size);
+                  const selectedText = vDoc.textBetween(sf, st);
+                  if (selectedText.trim()) {
+                    storage.onAiTrigger?.({ from: sf, to: st, text: selectedText });
+                  }
+                  setMode("normal");
+                  moveTo(vDoc, view, cursorPos);
                   return true;
                 }
 

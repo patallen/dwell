@@ -188,3 +188,50 @@ mark[data-type="open-question"]:hover {
 .animate-pulse-slow {
   animation: pulse-slow 3s ease-in-out infinite;
 }
+
+/* AI Thread highlights */
+.ai-thread-highlight {
+  background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--color-accent) 50%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.ai-thread-highlight:hover {
+  background-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.ai-thread-highlight[data-thread-status="streaming"] {
+  animation: thread-pulse 2s ease-in-out infinite;
+}
+
+.ai-thread-highlight[data-thread-status="ready"] {
+  background-color: color-mix(in srgb, var(--color-success) 22%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--color-success) 50%, transparent);
+}
+
+.ai-thread-highlight[data-thread-status="ready"]:hover {
+  background-color: color-mix(in srgb, var(--color-success) 35%, transparent);
+}
+
+/* AI thread pin — cursor-position indicator for no-selection threads */
+.ai-thread-pin {
+  color: var(--color-accent);
+  font-weight: bold;
+  opacity: 0.7;
+  animation: thread-pulse 2s ease-in-out infinite;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ai-thread-pin[data-thread-status="ready"] {
+  color: var(--color-success);
+  animation: none;
+  opacity: 1;
+}
+
+@keyframes thread-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

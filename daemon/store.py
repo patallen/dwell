@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from models import ContextEntry, Note, Question, Task
+from models import AiThread, ContextEntry, Note, Question, Task
 
 
 class FileStore:
@@ -16,10 +16,12 @@ class FileStore:
         self.notes: dict[str, Note] = {}
         self.tasks: dict[str, Task] = {}
         self.questions: dict[str, Question] = {}
+        self.threads: dict[str, AiThread] = {}
         self.context_stack: list[ContextEntry] = []
         self._index()
         self._load_context()
         self._load_questions()
+        self._load_threads()
 
     # --- Indexing / Parsing ---
 
@@ -507,6 +509,73 @@ class FileStore:
         del self.questions[qid]
         self._save_questions()
         return True
+
+    # --- AI Threads ---
+
+    def _threads_path(self) -> Path:
+        return self.root / ".ai_threads.json"
+
+    def _load_threads(self):
+        path = self._threads_path()
+        if not path.exists():
+            self.threads = {}
+            return
+        try:
+            data = json.loads(path.read_text())
+            self.threads = {
+                t["id"]: AiThread(
+                    id=t["id"], note_id=t["note_id"],
+                    action=t.get("action", "elaborate"),
+                    prompt=t.get("prompt", ""),
+                    selection_text=t.get("selection_text", ""),
+                    anchor_from=t.get("anchor_from", 0),
+                    anchor_to=t.get("anchor_to", 0),
+                    status=t.get("status", "streaming"),
+                    response=t.get("response", ""),
+                    created_at=datetime.fromisoformat(t["created_at"]),
+                    updated_at=datetime.fromisoformat(t["updated_at"]),
+                ) for t in data
+            }
+        except (json.JSONDecodeError, KeyError):
+            self.threads = {}
+
+    def _save_threads(self):
+        data = [{
+            "id": t.id, "note_id": t.note_id, "action": t.action,
+            "prompt": t.prompt, "selection_text": t.selection_text,
+            "anchor_from": t.anchor_from, "anchor_to": t.anchor_to,
+            "status": t.status, "response": t.response,
+            "created_at": t.created_at.isoformat(), "updated_at": t.updated_at.isoformat(),
+        } for t in self.threads.values()]
+        self._threads_path().write_text(json.dumps(data, indent=2))
+
+    def create_thread(self, thread: AiThread) -> AiThread:
+        if not thread.id:
+            thread.id = uuid.uuid4().hex[:8]
+        thread.created_at = datetime.now()
+        thread.updated_at = datetime.now()
+        self.threads[thread.id] = thread
+        self._save_threads()
+        return thread
+
+    def get_thread(self, thread_id: str) -> AiThread | None:
+        return self.threads.get(thread_id)
+
+    def update_thread(self, thread: AiThread) -> AiThread:
+        thread.updated_at = datetime.now()
+        self.threads[thread.id] = thread
+        self._save_threads()
+        return thread
+
+    def delete_thread(self, thread_id: str) -> bool:
+        if thread_id not in self.threads:
+            return False
+        del self.threads[thread_id]
+        self._save_threads()
+        return True
+
+    def note_threads(self, note_id: str) -> list[AiThread]:
+        return [t for t in self.threads.values() if t.note_id == note_id]
 
     # --- Context Stack ---
 

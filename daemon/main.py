@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import asdict
 from datetime import datetime
@@ -5,9 +6,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from models import ContextEntry, Note, Question, Task
+from ai import build_context_messages, stream_completion
+from ai_config import is_ai_configured, load_ai_config
+from models import AiThread, ContextEntry, Note, Question, Task
 from store import FileStore
 
 VAULT_PATH = os.environ.get("ADHDEEZ_VAULT", str(Path.home() / ".adhdeez"))
@@ -17,7 +21,7 @@ app = FastAPI(title="adhdeez")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "tauri://localhost"],
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "tauri://localhost"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -83,6 +87,28 @@ class ContextPushRequest(BaseModel):
 
 class ContextMemoRequest(BaseModel):
     memo: str
+
+
+class CreateAiThreadRequest(BaseModel):
+    note_id: str
+    action: str = "elaborate"
+    prompt: str = ""
+    selection_text: str = ""
+    anchor_from: int = 0
+    anchor_to: int = 0
+
+
+class UpdateAiThreadRequest(BaseModel):
+    status: str | None = None
+    response: str | None = None
+
+
+class AiStreamRequest(BaseModel):
+    action: str = "freeform"  # research | brainstorm | breakdown | freeform
+    prompt: str
+    note_id: str | None = None
+    selection: str | None = None
+    cursor_context: str | None = None
 
 
 # --- Focus ---
@@ -446,6 +472,79 @@ def delete_question(question_id: str):
     if not store.delete_question(question_id):
         raise HTTPException(404, "not found")
     return {"ok": True}
+
+
+# --- AI Threads ---
+
+
+@app.get("/notes/{note_id}/ai-threads")
+def list_note_threads(note_id: str):
+    if not store.get_note(note_id):
+        raise HTTPException(404, "note not found")
+    return [asdict(t) for t in store.note_threads(note_id)]
+
+
+@app.post("/ai-threads")
+def create_ai_thread(req: CreateAiThreadRequest):
+    thread = AiThread(
+        id="",
+        note_id=req.note_id,
+        action=req.action,
+        prompt=req.prompt,
+        selection_text=req.selection_text,
+        anchor_from=req.anchor_from,
+        anchor_to=req.anchor_to,
+        status="streaming",
+    )
+    created = store.create_thread(thread)
+    return asdict(created)
+
+
+@app.patch("/ai-threads/{thread_id}")
+def update_ai_thread(thread_id: str, req: UpdateAiThreadRequest):
+    thread = store.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(404, "not found")
+    if req.status is not None:
+        thread.status = req.status
+    if req.response is not None:
+        thread.response = req.response
+    updated = store.update_thread(thread)
+    return asdict(updated)
+
+
+@app.delete("/ai-threads/{thread_id}")
+def delete_ai_thread(thread_id: str):
+    if not store.delete_thread(thread_id):
+        raise HTTPException(404, "not found")
+    return {"ok": True}
+
+
+# --- AI ---
+
+
+@app.post("/ai/stream")
+async def ai_stream(req: AiStreamRequest):
+    config = load_ai_config()
+    if not is_ai_configured():
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'type': 'error', 'message': 'AI not configured'})}\n\n"]),
+            media_type="text/event-stream",
+        )
+    messages = build_context_messages(store, req.note_id, req.action, req.prompt, req.selection, req.cursor_context)
+    return StreamingResponse(
+        stream_completion(config, messages),
+        media_type="text/event-stream",
+    )
+
+
+@app.get("/ai/status")
+def ai_status():
+    config = load_ai_config()
+    return {
+        "configured": is_ai_configured(),
+        "model": config.get("model") if is_ai_configured() else None,
+    }
 
 
 if __name__ == "__main__":
