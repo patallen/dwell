@@ -1,4 +1,29 @@
-const API = "http://127.0.0.1:7777";
+const BASE = "http://127.0.0.1:7777";
+
+// --- Generic client ---
+
+async function request<T>(method: string, path: string, params?: Record<string, string>, body?: unknown): Promise<T> {
+  const url = new URL(`${BASE}${path}`);
+  if (params) for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const res = await fetch(url.toString(), {
+    method,
+    ...(body !== undefined && {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  });
+  if (method === "DELETE" && res.status === 204) return undefined as T;
+  return res.json();
+}
+
+const api = {
+  get: <T>(path: string, params?: Record<string, string>) => request<T>("GET", path, params),
+  post: <T>(path: string, body?: unknown) => request<T>("POST", path, undefined, body),
+  patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, undefined, body),
+  del: <T>(path: string) => request<T>("DELETE", path),
+};
+
+// --- Types ---
 
 export interface Note {
   id: string;
@@ -83,201 +108,6 @@ export type PendingAction =
   | { type: "done" }
   | { type: "drop" };
 
-// --- Focus ---
-
-export async function fetchFocus(energy?: EnergyLevel): Promise<FocusState> {
-  const url = energy ? `${API}/focus?energy=${energy}` : `${API}/focus`;
-  const res = await fetch(url);
-  return res.json();
-}
-
-// --- Context Stack ---
-
-export async function pushContext(refId: string, type = "task", reason = "", memoForCurrent?: string): Promise<FocusState> {
-  const res = await fetch(`${API}/context/push`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type, ref_id: refId, reason, memo_for_current: memoForCurrent || null }),
-  });
-  return res.json();
-}
-
-export async function setContextMemo(memo: string): Promise<FocusState> {
-  const res = await fetch(`${API}/context/memo`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ memo }),
-  });
-  return res.json();
-}
-
-export async function popContext(): Promise<FocusState> {
-  const res = await fetch(`${API}/context/pop`, { method: "POST" });
-  return res.json();
-}
-
-export async function fetchContext(): Promise<ContextEntry[]> {
-  const res = await fetch(`${API}/context`);
-  return res.json();
-}
-
-export async function removeContext(refId: string): Promise<FocusState> {
-  const res = await fetch(`${API}/context/${refId}`, { method: "DELETE" });
-  return res.json();
-}
-
-// --- Notes ---
-
-export async function fetchNotes(params?: Record<string, string>): Promise<Note[]> {
-  const url = new URL(`${API}/notes`);
-  if (params) {
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  }
-  const res = await fetch(url.toString());
-  return res.json();
-}
-
-export async function fetchNote(id: string): Promise<Note> {
-  const res = await fetch(`${API}/notes/${id}`);
-  return res.json();
-}
-
-export async function createNote(data: {
-  title: string;
-  body?: string;
-  note_type?: string;
-  status?: string;
-  parent?: string;
-  deadline?: string;
-}): Promise<Note> {
-  const res = await fetch(`${API}/notes`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function updateNote(
-  id: string,
-  data: Partial<Pick<Note, "title" | "body" | "note_type" | "status" | "parent" | "deadline">>
-): Promise<Note> {
-  const res = await fetch(`${API}/notes/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function deleteNote(id: string): Promise<void> {
-  await fetch(`${API}/notes/${id}`, { method: "DELETE" });
-}
-
-export async function fetchNoteChildren(noteId: string): Promise<Note[]> {
-  const res = await fetch(`${API}/notes/${noteId}/children`);
-  return res.json();
-}
-
-export async function fetchNoteTasks(noteId: string): Promise<Task[]> {
-  const res = await fetch(`${API}/notes/${noteId}/tasks`);
-  return res.json();
-}
-
-export async function fetchNoteQuestions(noteId: string): Promise<Question[]> {
-  const res = await fetch(`${API}/notes/${noteId}/questions`);
-  return res.json();
-}
-
-// --- Tasks ---
-
-export async function fetchTasks(params?: Record<string, string>): Promise<Task[]> {
-  const url = new URL(`${API}/tasks`);
-  if (params) {
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  }
-  const res = await fetch(url.toString());
-  return res.json();
-}
-
-export async function createTask(data: {
-  title: string;
-  body?: string;
-  status?: string;
-  loe?: string;
-  deadline?: string;
-  note_id?: string;
-}): Promise<Task> {
-  const res = await fetch(`${API}/tasks`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function updateTask(
-  id: string,
-  data: Partial<Pick<Task, "title" | "body" | "status" | "loe" | "deadline" | "note_id">>
-): Promise<Task> {
-  const res = await fetch(`${API}/tasks/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function deleteTask(id: string): Promise<void> {
-  await fetch(`${API}/tasks/${id}`, { method: "DELETE" });
-}
-
-// --- Questions ---
-
-export async function fetchQuestion(id: string): Promise<Question> {
-  const res = await fetch(`${API}/questions/${id}`);
-  return res.json();
-}
-
-export async function fetchQuestions(params?: Record<string, string>): Promise<Question[]> {
-  const url = new URL(`${API}/questions`);
-  if (params) {
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  }
-  const res = await fetch(url.toString());
-  return res.json();
-}
-
-export async function createQuestion(data: {
-  question: string;
-  note_id?: string;
-}): Promise<Question> {
-  const res = await fetch(`${API}/questions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function updateQuestion(
-  id: string,
-  data: Partial<Pick<Question, "question" | "answer" | "notes" | "status">>
-): Promise<Question> {
-  const res = await fetch(`${API}/questions/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function deleteQuestion(id: string): Promise<void> {
-  await fetch(`${API}/questions/${id}`, { method: "DELETE" });
-}
-
-// --- AI Threads ---
-
 export interface AiThread {
   id: string;
   note_id: string;
@@ -291,50 +121,6 @@ export interface AiThread {
   created_at: string;
   updated_at: string;
 }
-
-export async function fetchNoteAiThreads(noteId: string): Promise<AiThread[]> {
-  const res = await fetch(`${API}/notes/${noteId}/ai-threads`);
-  return res.json();
-}
-
-export async function createAiThread(data: {
-  note_id: string;
-  action: string;
-  prompt: string;
-  selection_text: string;
-  anchor_from: number;
-  anchor_to: number;
-}): Promise<AiThread> {
-  const res = await fetch(`${API}/ai-threads`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function updateAiThread(
-  id: string,
-  data: Partial<Pick<AiThread, "status" | "response">>
-): Promise<AiThread> {
-  const res = await fetch(`${API}/ai-threads/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return res.json();
-}
-
-export async function deleteAiThread(id: string): Promise<void> {
-  await fetch(`${API}/ai-threads/${id}`, { method: "DELETE" });
-}
-
-export async function stopAiThread(id: string): Promise<AiThread> {
-  const res = await fetch(`${API}/ai-threads/${id}/stop`, { method: "POST" });
-  return res.json();
-}
-
-// --- AI ---
 
 export interface AiStreamRequest {
   action: "research" | "brainstorm" | "breakdown" | "freeform";
@@ -350,20 +136,72 @@ export type AiStreamEvent =
   | { type: "done" }
   | { type: "error"; message: string };
 
-export async function fetchAiStatus(): Promise<{ configured: boolean; model: string | null }> {
-  const res = await fetch(`${API}/ai/status`);
-  return res.json();
-}
+// --- Focus ---
+
+export const fetchFocus = (energy?: EnergyLevel) =>
+  api.get<FocusState>("/focus", energy ? { energy } : undefined);
+
+// --- Context Stack ---
+
+export const pushContext = (refId: string, type = "task", reason = "", memoForCurrent?: string) =>
+  api.post<FocusState>("/context/push", { type, ref_id: refId, reason, memo_for_current: memoForCurrent || null });
+
+export const setContextMemo = (memo: string) =>
+  api.post<FocusState>("/context/memo", { memo });
+
+export const popContext = () => api.post<FocusState>("/context/pop");
+
+export const fetchContext = () => api.get<ContextEntry[]>("/context");
+
+export const removeContext = (refId: string) => api.del<FocusState>(`/context/${refId}`);
+
+// --- Notes ---
+
+export const fetchNotes = (params?: Record<string, string>) => api.get<Note[]>("/notes", params);
+export const fetchNote = (id: string) => api.get<Note>(`/notes/${id}`);
+export const createNote = (data: Partial<Note>) => api.post<Note>("/notes", data);
+export const updateNote = (id: string, data: Partial<Note>) => api.patch<Note>(`/notes/${id}`, data);
+export const deleteNote = (id: string) => api.del<void>(`/notes/${id}`);
+export const fetchNoteChildren = (noteId: string) => api.get<Note[]>(`/notes/${noteId}/children`);
+export const fetchNoteTasks = (noteId: string) => api.get<Task[]>(`/notes/${noteId}/tasks`);
+export const fetchNoteQuestions = (noteId: string) => api.get<Question[]>(`/notes/${noteId}/questions`);
+
+// --- Tasks ---
+
+export const fetchTasks = (params?: Record<string, string>) => api.get<Task[]>("/tasks", params);
+export const createTask = (data: Partial<Task>) => api.post<Task>("/tasks", data);
+export const updateTask = (id: string, data: Partial<Task>) => api.patch<Task>(`/tasks/${id}`, data);
+export const deleteTask = (id: string) => api.del<void>(`/tasks/${id}`);
+
+// --- Questions ---
+
+export const fetchQuestion = (id: string) => api.get<Question>(`/questions/${id}`);
+export const fetchQuestions = (params?: Record<string, string>) => api.get<Question[]>("/questions", params);
+export const createQuestion = (data: Partial<Question>) => api.post<Question>("/questions", data);
+export const updateQuestion = (id: string, data: Partial<Question>) => api.patch<Question>(`/questions/${id}`, data);
+export const deleteQuestion = (id: string) => api.del<void>(`/questions/${id}`);
+
+// --- AI Threads ---
+
+export const fetchNoteAiThreads = (noteId: string) => api.get<AiThread[]>(`/notes/${noteId}/ai-threads`);
+export const createAiThread = (data: Partial<AiThread>) => api.post<AiThread>("/ai-threads", data);
+export const updateAiThread = (id: string, data: Partial<AiThread>) => api.patch<AiThread>(`/ai-threads/${id}`, data);
+export const deleteAiThread = (id: string) => api.del<void>(`/ai-threads/${id}`);
+export const stopAiThread = (id: string) => api.post<AiThread>(`/ai-threads/${id}/stop`);
+
+// --- AI Streaming ---
+
+export const fetchAiStatus = () => api.get<{ configured: boolean; model: string | null }>("/ai/status");
 
 export async function streamAi(
-  request: AiStreamRequest,
+  req: AiStreamRequest,
   onEvent: (event: AiStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${API}/ai/stream`, {
+  const res = await fetch(`${BASE}/ai/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
+    body: JSON.stringify(req),
     signal,
   });
 
@@ -386,8 +224,7 @@ export async function streamAi(
     for (const line of lines) {
       if (line.startsWith("data: ")) {
         try {
-          const event = JSON.parse(line.slice(6)) as AiStreamEvent;
-          onEvent(event);
+          onEvent(JSON.parse(line.slice(6)) as AiStreamEvent);
         } catch { /* skip malformed */ }
       }
     }

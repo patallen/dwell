@@ -104,7 +104,7 @@ export function useOverlayManager(
     }
   }, []);
 
-  const handleCreateNote = useCallback(async (noteType?: string) => {
+  const handleCreateNote = useCallback(async (noteType?: Note["note_type"]) => {
     try {
       const note = await createNote({ title: "Untitled", note_type: noteType });
       setOverlay(null);
